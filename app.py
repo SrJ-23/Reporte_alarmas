@@ -196,10 +196,10 @@ else:
         if not df_filtrado.empty:
             st.subheader("📊 Incidencias registradas por hora")
 
-            if {"DEV_2", "Cliente_puerto", "PORT TIME", "Hour", "SerialNo"}.issubset(df_filtrado.columns):
+            if {"DEV", "FN","SN","PN", "HoraPeru", "Hour", "SerialNo"}.issubset(df_filtrado.columns):
                 tabla_dinamica = pd.pivot_table(
                     df_filtrado,
-                    index=["DEV_2", "Cliente_puerto", "PORT TIME"],
+                    index=["DEV", "FN","SN","PN", "HoraPeru"],
                     columns="Hour",
                     values="SerialNo",
                     aggfunc="count",
@@ -219,7 +219,7 @@ else:
                     mime="text/csv"
                 )
             else:
-                faltantes = {"DEV_2", "Cliente_puerto", "PORT TIME", "Hour", "SerialNo"} - set(df_filtrado.columns)
+                faltantes = {"DEV", "FN","SN","PN", "HoraPeru", "Hour", "SerialNo"} - set(df_filtrado.columns)
                 st.warning(f"⚠️ Faltan columnas necesarias para la tabla dinámica: {faltantes}")
 
         # --- GRÁFICO DE TOP OLT ---
