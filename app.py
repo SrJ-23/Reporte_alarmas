@@ -196,10 +196,10 @@ else:
         if not df_filtrado.empty:
             st.subheader("📊 Incidencias registradas por hora")
 
-            if {"DEV", "Cliente_puerto","SN","PN", "HoraPeru", "Hour", "SerialNo"}.issubset(df_filtrado.columns):
+            if {"DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "Hour", "SerialNo"}.issubset(df_filtrado.columns):
                 tabla_dinamica = pd.pivot_table(
                     df_filtrado,
-                    index=["DEV", "Cliente_puerto","SN","PN", "HoraPeru"],
+                    index=["DEV", "Cliente_puerto", "SN", "PN", "HoraPeru"],
                     columns="Hour",
                     values="SerialNo",
                     aggfunc="count",
@@ -210,6 +210,7 @@ else:
                 tabla_dinamica = tabla_dinamica.sort_values(by="Total", ascending=False)
                 tabla_dinamica.columns = tabla_dinamica.columns.map(str)
                 tabla_dinamica = tabla_dinamica.reset_index()
+
                 st.dataframe(tabla_dinamica, use_container_width=True)
 
                 st.download_button(
@@ -218,9 +219,50 @@ else:
                     file_name="tabla_dinamica.csv",
                     mime="text/csv"
                 )
+
+                # --- 🔍 Agregar sección de detalle ---
+                st.markdown("### 🔎 Detalle de registros")
+
+                # Selector seguro para elegir fila
+                seleccion = st.selectbox(
+                    "Selecciona una fila para ver detalles:",
+                    tabla_dinamica.index,
+                    format_func=lambda i: f"{tabla_dinamica.loc[i, 'DEV']} - {tabla_dinamica.loc[i, 'Cliente_puerto']}"
+                )
+
+                if seleccion is not None:
+                    fila = tabla_dinamica.loc[seleccion]
+                    dev_sel = fila["DEV"]
+                    cliente_sel = fila["Cliente_puerto"]
+                    sn_sel = fila["SN"]
+                    pn_sel = fila["PN"]
+                    hora_sel = fila["HoraPeru"]
+
+                    # Filtrar df_filtrado para mostrar detalles
+                    columnas_detalle = ["DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "AditionalInfo", "SerialNumber_TDP"]
+                    columnas_existentes = [c for c in columnas_detalle if c in df_filtrado.columns]
+
+                    detalle = df_filtrado[
+                        (df_filtrado["DEV"] == dev_sel) &
+                        (df_filtrado["Cliente_puerto"] == cliente_sel) &
+                        (df_filtrado["SN"] == sn_sel) &
+                        (df_filtrado["PN"] == pn_sel) &
+                        (df_filtrado["HoraPeru"] == hora_sel)
+                    ][columnas_existentes]
+
+                    st.dataframe(detalle, use_container_width=True)
+
+                    st.download_button(
+                        label="📥 Descargar detalle (.csv)",
+                        data=detalle.to_csv(index=False).encode("utf-8"),
+                        file_name=f"detalle_{dev_sel}.csv",
+                        mime="text/csv"
+                    )
+
             else:
-                faltantes = {"DEV", "Cliente_puerto","SN","PN", "HoraPeru", "Hour", "SerialNo"} - set(df_filtrado.columns)
+                faltantes = {"DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "Hour", "SerialNo"} - set(df_filtrado.columns)
                 st.warning(f"⚠️ Faltan columnas necesarias para la tabla dinámica: {faltantes}")
+
 
         # --- GRÁFICO DE TOP OLT ---
         if "DEV" in df_filtrado.columns:
