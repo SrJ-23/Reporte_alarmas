@@ -89,6 +89,36 @@ def get_alarmas():
             on="DEV_2", how="left"
         )
         alarmas = alarmas.rename(columns={"Total general": "Cliente_puerto"})
+
+    try:
+        clientes_tdp = pd.read_parquet("clientes_TDP.parquet")
+
+        # Asegurar tipos compatibles
+        clientes_tdp["SUBSCRIPCION"] = clientes_tdp["SUBSCRIPCION"].astype(str)
+        alarmas["AditionalInfo"] = alarmas["AditionalInfo"].astype(str)
+
+        # Hacer merge: AditionalInfo ↔ SUBSCRIPCION
+        alarmas = alarmas.merge(
+            clientes_tdp[["SUBSCRIPCION", "SERIAL NUMBER"]],
+            left_on="AditionalInfo",
+            right_on="SUBSCRIPCION",
+            how="left"
+        )
+
+        # Renombrar columna resultante para mayor claridad
+        alarmas = alarmas.rename(columns={"SERIAL NUMBER": "SerialNumber_TDP"})
+
+        # Ya no necesitamos la columna SUBSCRIPCION duplicada del parquet
+        alarmas = alarmas.drop(columns=["SUBSCRIPCION"], errors="ignore")
+
+        print("✅ Cruce con clientes_TDP.parquet completado.")
+        print("📦 Ejemplo de SerialNumber_TDP encontrados:")
+        print(alarmas["SerialNumber_TDP"].dropna().head(5).to_list())
+
+    except Exception as e:
+        print(f"⚠️ Error al cruzar con clientes_TDP.parquet: {e}")
+
+    print(alarmas["SerialNumber_TDP"].dropna().head(5).to_list())
     print("🔎 Ejemplo de DEV_2 en alarmas:")
     print(alarmas["DEV_2"].dropna().head(5).to_list())
 
