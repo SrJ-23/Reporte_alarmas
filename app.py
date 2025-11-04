@@ -4,7 +4,7 @@ import plotly.express as px
 from scripts.fetch_data import get_alarmas
 from datetime import datetime, timedelta
 from PIL import Image
-
+import requests
 
 img=Image.open("logo.png")
 
@@ -252,12 +252,58 @@ else:
 
                     st.dataframe(detalle, use_container_width=True)
 
-                    st.download_button(
-                        label="📥 Descargar detalle (.csv)",
-                        data=detalle.to_csv(index=False).encode("utf-8"),
-                        file_name=f"detalle_{dev_sel}.csv",
-                        mime="text/csv"
-                    )
+                    ngrok_base_url = "https://leilani-thimblelike-lucklessly.ngrok-free.dev"
+
+                    col1, col2 = st.columns(2)
+                    with col2:
+                        st.download_button(
+                            label="📥 Descargar detalle (.csv)",
+                            data=detalle.to_csv(index=False).encode("utf-8"),
+                            file_name=f"detalle_{dev_sel}.csv",
+                            mime="text/csv"
+                        )
+                    with col1:
+                        if st.button("👓 Consultar en Tiempo Real"):
+                            try:
+                                # Construir la URL de consulta
+                                sn_val = int(float(sn_sel)) if str(sn_sel).replace('.', '', 1).isdigit() else sn_sel
+                                pn_val = int(float(pn_sel)) if str(pn_sel).replace('.', '', 1).isdigit() else pn_sel
+                                params = {
+                                    "dev": dev_sel,
+                                    "fn": 0,
+                                    "sn": sn_val,
+                                    "pn": pn_val
+                                }
+                                url = f"{ngrok_base_url}/consulta"
+                                
+                                response = requests.get(url, params=params)
+
+                                if response.status_code == 200:
+                                    try:
+                                        json_data = response.json()
+                                        df_json = pd.json_normalize(json_data)
+
+                                        # Filtrar columnas deseadas
+                                        columnas_deseadas = ["ALIAS", "LSTDOWNTIME", "LSTUPTIME", "ONTID", "OperState"]
+                                        columnas_existentes = [c for c in columnas_deseadas if c in df_json.columns]
+                                        df_mostrar = df_json[columnas_existentes]
+
+                                        if not df_mostrar.empty:
+                                            st.success("✅ Consulta exitosa")
+                                            st.dataframe(df_mostrar, use_container_width=True)
+                                        else:
+                                            st.warning("⚠️ No se encontraron columnas esperadas en la respuesta.")
+                                            st.write(df_json.head())  # Muestra algo de respaldo
+                                    except Exception as e:
+                                        st.error(f"⚠️ Respuesta no es JSON válido: {e}")
+                                        st.text(response.text)
+                                else:
+                                    st.error(f"❌ Error {response.status_code}: {response.text}")
+
+                            except Exception as e:
+                                st.error(f"⚠️ Error al conectar con ngrok: {e}")
+
+                    
 
             else:
                 faltantes = {"DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "Hour", "SerialNo"} - set(df_filtrado.columns)
