@@ -146,8 +146,8 @@ else:
         # Aplicar filtro base según el gestor
         if gestor_seleccionado == "huawei":
             df_filtrado = df_filtrado[df_filtrado["Gestor"].str.lower() == "huawei"]
-        elif gestor_seleccionado == "zte":
-            df_filtrado = df_filtrado[df_filtrado["Gestor"].str.lower() == "zte"]
+        elif gestor_seleccionado == "ZTE":
+            df_filtrado = df_filtrado[df_filtrado["Gestor"].str.lower() == "ZTE"]
 
         st.info(f"📡 Gestor seleccionado: {gestor_seleccionado.upper()}")
 
