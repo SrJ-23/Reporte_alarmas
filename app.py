@@ -8,13 +8,28 @@ import requests
 
 # --- CONFIGURACIÓN INICIAL ---
 img = Image.open("logo.png")
-st.set_page_config(page_title="Reporte", layout="wide", page_icon=img, initial_sidebar_state="expanded")
+st.set_page_config(page_title="ADCE", layout="wide", page_icon=img, initial_sidebar_state="expanded")
 
-st.title("📊 Reporte de Alarmas Huawei & ZTE")
-
+st.title("📊 ADCE ")
+st.caption ("Alarm Data Control Engine")
 # Control de actualización automática
 if "last_update" not in st.session_state:
     st.session_state.last_update = datetime.now() - timedelta(minutes=16)
+
+#Funciones
+
+def consultar_serial_api(serial):
+    """Función para consultar la API"""
+    try:
+        url = f"{ngrok_base_url}/consulta_serial?serial={serial}"
+        response = requests.get(url, timeout=20)
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"error": f"Error en la API: {response.status_code}"}
+    except Exception as e:
+        return {"error": f"Error de conexión: {str(e)}"}
 
 def actualizar_datos():
     st.session_state.data = get_alarmas()
@@ -100,13 +115,15 @@ else:
         if tipo_final:
             df_filtrado = df_filtrado[df_filtrado["TipoFinal"].isin(tipo_final)]
 
-    elif gestor_seleccionado.lower() == "zte" and "strName" in df_filtrado.columns:
+    elif gestor_seleccionado.lower() == "zte" and "strAckUserName" in df_filtrado.columns:
         str_name = st.sidebar.multiselect(
-            "🏷️ strName (ZTE)",
-            options=sorted(df_filtrado["strName"].dropna().unique())
+            "🏷️ Tipo alarma (ZTE)",
+            options=sorted(df_filtrado["strAckUserName"].dropna().unique())
         )
         if str_name:
-            df_filtrado = df_filtrado[df_filtrado["strName"].isin(str_name)]
+            df_filtrado = df_filtrado[df_filtrado["strAckUserName"].isin(str_name)]
+    if df_filtrado.empty:
+        st.warning("⚠️ No se encontraron datos con los filtros seleccionados.")
 
     # --- Tema (lista desplegable al final del sidebar) ---
     st.sidebar.markdown("---")
@@ -187,25 +204,68 @@ else:
                 with col1:
                     if st.button("👓 Consultar en Tiempo Real"):
                         try:
-                                # Construir la URL de consulta
-                            sn_val = int(float(sn_sel)) if str(sn_sel).replace('.', '', 1).isdigit() else sn_sel
-                            pn_val = int(float(pn_sel)) if str(pn_sel).replace('.', '', 1).isdigit() else pn_sel
-                            params = {
-                                "dev": dev_sel,
-                                "fn": 0,
-                                "sn": sn_val,
-                                "pn": pn_val
-                            }
-                            url = f"{ngrok_base_url}/consulta"
-                            
+                            # Detectar gestor y construir URL apropiada
+                            if gestor_seleccionado.lower() == "huawei":
+                                # Huawei - formato actual
+                                sn_val = int(float(sn_sel)) if str(sn_sel).replace('.', '', 1).isdigit() else sn_sel
+                                pn_val = int(float(pn_sel)) if str(pn_sel).replace('.', '', 1).isdigit() else pn_sel
+                                params = {
+                                    "dev": dev_sel,
+                                    "fn": 0,
+                                    "sn": sn_val,
+                                    "pn": pn_val
+                                }
+                                url = f"{ngrok_base_url}/consulta"
+                                
+                            elif gestor_seleccionado.lower() == "zte":
+                                # ZTE - buscar en datos originales para obtener IP y ONTID
+                                zte_match = df[
+                                    (df["DEV"] == dev_sel) & 
+                                    (df["Cliente_puerto"] == cliente_sel) &
+                                    (df["SN"] == sn_sel) & 
+                                    (df["PN"] == pn_sel)
+                                ].iloc[0] if not df[
+                                    (df["DEV"] == dev_sel) & 
+                                    (df["Cliente_puerto"] == cliente_sel) &
+                                    (df["SN"] == sn_sel) & 
+                                    (df["PN"] == pn_sel)
+                                ].empty else None
+                                
+                                
+                                sn_val = int(float(sn_sel)) if str(sn_sel).replace('.', '', 1).isdigit() else sn_sel
+                                pn_val = int(float(pn_sel)) if str(pn_sel).replace('.', '', 1).isdigit() else pn_sel
+                                if zte_match is not None and "DID" in zte_match and "ONTID" in zte_match:
+                                    olt_ip = zte_match["DID"]
+                                    ontid = zte_match["ONTID"]
+                                    ontid_val = int(float(ontid)) if str(ontid).replace('.', '', 1).isdigit() else ontid
+                                    ponid = f"1-{ontid_val}-{sn_val}-{pn_val}"
+                                    
+                                    params = {
+                                        "oltid": olt_ip,
+                                        "ponid": ponid
+                                    }
+                                    url = f"{ngrok_base_url}/pruebazte"
+                                else:
+                                    st.error("❌ No se encontraron datos necesarios (DID u ONTID) para consulta ZTE")
+                                    st.stop()
+                            else:
+                                st.error("❌ Gestor no soportado")
+                                st.stop()
+
+                            # Realizar consulta (código existente)
                             response = requests.get(url, params=params)
 
                             if response.status_code == 200:
                                 try:
                                     json_data = response.json()
                                     df_json = pd.json_normalize(json_data)
-                                        # Filtrar columnas deseadas
-                                    columnas_deseadas = ["ALIAS", "LSTDOWNTIME", "LSTUPTIME", "ONTID", "OperState"]
+                                    
+                                    # Columnas según gestor
+                                    if gestor_seleccionado.lower() == "huawei":
+                                        columnas_deseadas = ["ALIAS", "LSTDOWNTIME", "LSTUPTIME", "ONTID", "OperState"]
+                                    else:
+                                        columnas_deseadas = ["ONUID", "OperState", "AUTHINFO", "LASTOFFTIME"]
+                                    
                                     columnas_existentes = [c for c in columnas_deseadas if c in df_json.columns]
                                     df_mostrar = df_json[columnas_existentes]
 
@@ -214,15 +274,146 @@ else:
                                         st.dataframe(df_mostrar, use_container_width=True)
                                     else:
                                         st.warning("⚠️ No se encontraron columnas esperadas en la respuesta.")
-                                        st.write(df_json.head())  # Muestra algo de respaldo
+                                        st.write(df_json.head())
                                 except Exception as e:
                                     st.error(f"⚠️ Respuesta no es JSON válido: {e}")
                                     st.text(response.text)
                             else:
                                 st.error(f"❌ Error {response.status_code}: {response.text}")
                         except Exception as e:
-                            st.error(f"⚠️ Error al conectar con ngrok: {e}")
+                            st.error(f"⚠️ Error al conectar: {e}")
 
+        # Inicializar estado de sesión
+        if 'show_consultation' not in st.session_state:
+            st.session_state.show_consultation = False
+        if 'consultation_result' not in st.session_state:
+            st.session_state.consultation_result = None
+        
+        if st.button("🔎 Consultar Estado de ONT", type="primary", use_container_width=True):
+            st.session_state.show_consultation = True
+            st.session_state.consultation_result = None
+
+        # Mostrar formulario de consulta si está activo
+        if st.session_state.show_consultation:
+            st.subheader("Consulta por Serial Number")
+            
+            # Formulario para ingresar serial
+            with st.form("serial_consultation_form"):
+                serial_input = st.text_input(
+                    "📋 Serial Number del ONT:",
+                    placeholder="Ej: MSTC0940DFDA",
+                    help="Ingrese el serial number del equipo ONT",
+                    key="serial_input"
+                )
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    submit_btn = st.form_submit_button("🚀 Ejecutar Consulta", type="primary", use_container_width=True)
+                with col2:
+                    cancel_btn = st.form_submit_button("❌ Cancelar", use_container_width=True)
+            
+            # Procesar formulario
+            if submit_btn and serial_input:
+                with st.spinner("🔍 Consultando información del ONT..."):
+                    resultado = consultar_serial_api(serial_input.strip())
+                    st.session_state.consultation_result = resultado
+                    st.rerun()
+            
+            if cancel_btn:
+                st.session_state.show_consultation = False
+                st.session_state.consultation_result = None
+                st.rerun()
+
+        # Mostrar resultados si existen
+        if st.session_state.consultation_result:
+            st.markdown("---")
+            resultado = st.session_state.consultation_result
+            
+            if "error" in resultado:
+                st.error(f"❌ **Error en la consulta:** {resultado['error']}")
+            else:
+                st.success("✅ **ONT encontrado exitosamente!**")
+                
+                # Crear pestañas para organizar la información
+                tab1, tab2, tab3 = st.tabs(["📊 Resumen", "🔧 Datos Técnicos", "📁 Raw Data"])
+                
+                with tab1:
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.subheader("📋 Información del ONT")
+                        datos_ont = resultado["datos_ont"]
+                        
+                        st.metric("📟 Serial", resultado["serial_number"])
+                        st.metric("🏷️ Alias", datos_ont["alias"])
+                        st.metric("🔢 ONT ID", datos_ont["ontid"])
+                        st.metric("📊 Perfil", datos_ont["lineprof"])
+                        
+                        st.write(f"**📍 Ubicación:** {datos_ont['dev_completo']}")
+                    
+                    with col2:
+                        st.subheader("📊 Estado Óptico")
+                        opticos = resultado["parametros_opticos"]
+                        
+                        # Mostrar RX Power con color según calidad
+                        rx_power = opticos['rx_power']
+                        if rx_power != "--":
+                            rx_value = float(rx_power.split()[0])
+                            if rx_value >= -27:
+                                st.metric("📡 RX Power", rx_power, delta="Óptimo", delta_color="normal")
+                            elif rx_value >= -30:
+                                st.metric("📡 RX Power", rx_power, delta="Aceptable", delta_color="off")
+                            else:
+                                st.metric("📡 RX Power", rx_power, delta="Crítico", delta_color="inverse")
+                        else:
+                            st.metric("📡 RX Power", rx_power)
+                        
+                        st.metric("📤 TX Power", opticos['tx_power'])
+                        st.metric("📏 Distancia", opticos['ranging_distance'])
+                        st.metric("🌡️ Temperatura", opticos['temperature'])
+                        st.metric("⚡ Voltaje", opticos['voltage'])
+                        st.metric("🔋 Corriente Bias", opticos['bias_current'])
+                
+                with tab2:
+                    st.subheader("🔧 Datos Técnicos Completos")
+                    
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.write("**Configuración OLT:**")
+                        datos_ont = resultado["datos_ont"]
+                        st.json({
+                            "DEV": datos_ont["dev"],
+                            "Frame": datos_ont["fn"],
+                            "Slot": datos_ont["sn"],
+                            "Port": datos_ont["pn"],
+                            "ONT ID": datos_ont["ontid"],
+                            "Alias": datos_ont["alias"],
+                            "Line Profile": datos_ont["lineprof"]
+                        })
+                    
+                    with col2:
+                        st.write("**Parámetros Ópticos Detallados:**")
+                        opticos = resultado["parametros_opticos"]
+                        st.json({
+                            "RX Power": opticos["rx_power"],
+                            "TX Power": opticos["tx_power"], 
+                            "Bias Current": opticos["bias_current"],
+                            "Temperature": opticos["temperature"],
+                            "Voltage": opticos["voltage"],
+                            "Ranging Distance": opticos["ranging_distance"]
+                        })
+                
+                with tab3:
+                    st.subheader("📁 Respuesta Cruda de la API")
+                    st.json(resultado)
+            
+            # Botón para nueva consulta
+            st.markdown("---")
+            if st.button("🔄 Realizar Nueva Consulta", use_container_width=True):
+                st.session_state.show_consultation = True
+                st.session_state.consultation_result = None
+                st.rerun()
+                
         # --- GRÁFICO DE TOP OLT ---
         if "DEV" in df_filtrado.columns:
             top_olts = (
@@ -237,7 +428,14 @@ else:
         st.warning("😶 No hay registros en el rango seleccionado.")
 
 #-----------------------------------------------
-# --- 🎨 Temas---
+
+# Inicializar estado de sesión
+if 'show_consultation' not in st.session_state:
+    st.session_state.show_consultation = False
+if 'consultation_result' not in st.session_state:
+    st.session_state.consultation_result = None
+
+
 # --- 🎨 Tema oscuro de lujo (corregido y completo) ---
 if tema == "Oscuro":
     bg_color = "#F8DD65"        # Fondo principal negro profundo
