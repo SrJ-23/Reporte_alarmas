@@ -31,15 +31,73 @@ st.title("📉 Dashboard Histórico de Alarmas")
 st.markdown("**Alcance:** Análisis histórico completo - Todos los gestores")
 
 # --- CARGA DE DATOS ---
+# 🆕 Botón de actualización en el header
+col_header1, col_header2, col_header3 = st.columns([3, 1, 1])
+
+with col_header1:
+    st.write("")  # Espaciado
+
+with col_header2:
+    # Mostrar última actualización
+    from scripts.fetch_data import get_info_cache
+    info_cache = get_info_cache()
+    
+    if info_cache['timestamp_procesamiento']:
+        tiempo_transcurrido = datetime.now() - info_cache['timestamp_procesamiento']
+        minutos = int(tiempo_transcurrido.total_seconds() / 60)
+        
+        if minutos < 1:
+            tiempo_str = "Hace menos de 1 min"
+        elif minutos < 60:
+            tiempo_str = f"Hace {minutos} min"
+        else:
+            horas = minutos // 60
+            tiempo_str = f"Hace {horas}h {minutos % 60}min"
+        
+        st.caption(f"🕐 {tiempo_str}")
+    else:
+        st.caption("🕐 Sin información")
+
+with col_header3:
+    if st.button("🔄 Actualizar", type="primary", use_container_width=True, key="update_header"):
+        with st.spinner("Actualizando datos desde Google Sheets..."):
+            # Limpiar session_state
+            if 'data' in st.session_state:
+                del st.session_state.data
+            if 'drill_olt_selected' in st.session_state:
+                del st.session_state.drill_olt_selected
+            if 'drill_dev2_selected' in st.session_state:
+                del st.session_state.drill_dev2_selected
+            
+            # Recargar con forzar_recarga=True
+            raw_data = get_alarmas(forzar_recarga=True)
+            st.session_state.data = raw_data
+            
+            st.success("✅ Datos actualizados correctamente")
+            st.rerun()
+
+# Cargar datos normalmente si no están en session_state
 if "data" not in st.session_state:
     with st.spinner("Cargando histórico de alarmas..."):
-        raw_data = get_alarmas()
+        raw_data = get_alarmas(forzar_recarga=False)
         st.session_state.data = raw_data
 
 df_original = st.session_state.data.copy()
 
 # --- INFORMACIÓN RÁPIDA DE DATOS CARGADOS ---
-st.success(f"✅ {len(df_original):,} registros cargados correctamente")
+col_info1, col_info2, col_info3 = st.columns([2, 1, 1])
+
+with col_info1:
+    st.success(f"✅ {len(df_original):,} registros cargados correctamente")
+
+with col_info2:
+    info_cache = get_info_cache()
+    if info_cache['timestamp_actuales']:
+        st.caption(f"📡 Actuales: {info_cache['timestamp_actuales'].strftime('%H:%M:%S')}")
+
+with col_info3:
+    if info_cache['timestamp_historicas']:
+        st.caption(f"📚 Históricas: {info_cache['timestamp_historicas'].strftime('%H:%M:%S')}")
 
 # --- DECISIÓN: ¿FILTRAR O NO POR GESTOR? ---
 st.info("💡 **Importante**: Este dashboard ahora muestra TODAS las alarmas. Usa el filtro de 'Gestor' para ver específicamente Huawei, ZTE o Histórico.")
@@ -582,35 +640,61 @@ if not df_filtered.empty and 'DEV_2' in df_filtered.columns:
 else:
     st.info("No hay datos disponibles para mostrar el ranking de puertos")
 
-# --- 🔄 ACTUALIZACIÓN DE BASE DE DATOS ---
+# --- 🔄 INFORMACIÓN DE ACTUALIZACIÓN ---
 st.divider()
-st.subheader("🔄 Actualización de Base de Datos")
+st.subheader("📊 Información del Sistema")
 
-col_update1, col_update2, col_update3 = st.columns([2, 1, 2])
+col_info_sys1, col_info_sys2, col_info_sys3, col_info_sys4 = st.columns(4)
 
-with col_update2:
-    if st.button("🔄 Actualizar Datos", type="primary", use_container_width=True):
-        with st.spinner("Actualizando base de datos..."):
-            # Limpiar session state
-            if 'data' in st.session_state:
-                del st.session_state.data
-            if 'drill_olt_selected' in st.session_state:
-                del st.session_state.drill_olt_selected
-            if 'drill_dev2_selected' in st.session_state:
-                del st.session_state.drill_dev2_selected
-            
-            # Recargar datos
-            raw_data = get_alarmas()
-            st.session_state.data = raw_data
-            
-            st.success("✅ Datos actualizados correctamente")
-            st.rerun()
+info_cache = get_info_cache()
 
-# Mostrar timestamp de última carga
-if 'data' in st.session_state:
-    col_ts1, col_ts2, col_ts3 = st.columns([2, 1, 2])
-    with col_ts2:
-        st.caption(f"📅 Última actualización: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}")
+with col_info_sys1:
+    if info_cache['timestamp_procesamiento']:
+        st.metric(
+            "⏱️ Última Actualización",
+            info_cache['timestamp_procesamiento'].strftime('%H:%M:%S'),
+            delta=f"{info_cache['tiempo_procesamiento']:.1f}s procesamiento" if info_cache['tiempo_procesamiento'] else None
+        )
+    else:
+        st.metric("⏱️ Última Actualización", "N/A")
+
+with col_info_sys2:
+    if info_cache['timestamp_actuales']:
+        tiempo_actuales = datetime.now() - info_cache['timestamp_actuales']
+        minutos_actuales = int(tiempo_actuales.total_seconds() / 60)
+        st.metric(
+            "📡 Alarmas Actuales",
+            "Cacheadas",
+            delta=f"Hace {minutos_actuales} min" if minutos_actuales < 60 else f"Hace {minutos_actuales//60}h"
+        )
+    else:
+        st.metric("📡 Alarmas Actuales", "No cargadas")
+
+with col_info_sys3:
+    if info_cache['timestamp_historicas']:
+        tiempo_historicas = datetime.now() - info_cache['timestamp_historicas']
+        horas_historicas = int(tiempo_historicas.total_seconds() / 3600)
+        st.metric(
+            "📚 Alarmas Históricas",
+            "Cacheadas",
+            delta=f"Hace {horas_historicas}h" if horas_historicas > 0 else "Reciente"
+        )
+    else:
+        st.metric("📚 Alarmas Históricas", "No cargadas")
+
+with col_info_sys4:
+    st.metric(
+        "🔄 Auto-refresh",
+        "5 min (actuales)",
+        delta="24h (históricas)"
+    )
+
+st.info(
+    "ℹ️ **Sistema de Caché Inteligente:**\n"
+    "- **Alarmas Actuales** (Huawei/ZTE): Se actualizan automáticamente cada 5 minutos\n"
+    "- **Alarmas Históricas**: Se actualizan cada 24 horas (datos más estables)\n"
+    "- Usa el botón 🔄 **Actualizar** en el header para forzar recarga inmediata"
+)
 
 # --- TABLA DE DATOS ---
 st.divider()
