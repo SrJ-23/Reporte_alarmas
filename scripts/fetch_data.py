@@ -102,9 +102,10 @@ def limpiar_num(x):
         return str(x).strip() if str(x).strip() else "?"
 
 
-@st.cache_data(ttl=14400)
+# 🆕 MEJORADO: TTL más largo para históricas (24 horas)
+@st.cache_data(ttl=86400, show_spinner="Cargando alarmas históricas...")
 def get_alarmas_historicas():
-    """Descarga SOLO alarmas históricas con caché de 4 horas."""
+    """Descarga SOLO alarmas históricas con caché de 24 horas."""
     print("🔄 Descargando alarmas históricas...")
     historicas_df = download_csv(URL_HISTORICAS)
     
@@ -115,12 +116,17 @@ def get_alarmas_historicas():
         historicas_df["_Origen"] = "Histórico"
     
     print(f"✅ Históricas cargadas: {len(historicas_df):,} registros")
+    
+    # 🆕 Guardar timestamp de carga
+    st.session_state['timestamp_historicas'] = datetime.now()
+    
     return historicas_df
 
 
-@st.cache_data(ttl=900)
+# 🆕 MEJORADO: TTL de 5 minutos para alarmas actuales
+@st.cache_data(ttl=300, show_spinner="Cargando alarmas actuales...")
 def get_alarmas_actuales():
-    """Descarga SOLO alarmas actuales (Huawei y ZTE) con caché de 15 minutos."""
+    """Descarga SOLO alarmas actuales (Huawei y ZTE) con caché de 5 minutos."""
     print("🔄 Descargando alarmas actuales (Huawei + ZTE)...")
     
     huawei_df = download_csv(URL_HUAWEI)
@@ -137,12 +143,26 @@ def get_alarmas_actuales():
     actuales = pd.concat([huawei_df, zte_df], ignore_index=True)
     
     print(f"✅ Actuales cargadas: {len(actuales):,} registros (Huawei: {len(huawei_df)}, ZTE: {len(zte_df)})")
+    
+    # 🆕 Guardar timestamp de carga
+    st.session_state['timestamp_actuales'] = datetime.now()
+    
     return actuales
 
 
-@st.cache_data(ttl=900)
-def get_alarmas():
-    """Combina alarmas actuales e históricas + procesa datos de clientes."""
+# 🆕 MEJORADO: Sin cache_data aquí, solo combina las funciones cacheadas
+def get_alarmas(forzar_recarga=False):
+    """
+    Combina alarmas actuales e históricas + procesa datos de clientes.
+    
+    Args:
+        forzar_recarga (bool): Si es True, limpia el caché antes de cargar
+    """
+    
+    # 🆕 Si se solicita forzar recarga, limpiar caché
+    if forzar_recarga:
+        print("🔄 Forzando recarga de datos...")
+        st.cache_data.clear()
     
     inicio = datetime.now()
     
@@ -251,6 +271,10 @@ def get_alarmas():
     # --- 🔹 Calcular tiempo de procesamiento ---
     tiempo_total = (datetime.now() - inicio).total_seconds()
     
+    # 🆕 Guardar timestamp de procesamiento completo
+    st.session_state['timestamp_procesamiento'] = datetime.now()
+    st.session_state['tiempo_procesamiento'] = tiempo_total
+    
     # --- 🔹 Estadísticas finales ---
     print("\n" + "="*60)
     print(f"⏱️  TIEMPO DE PROCESAMIENTO: {tiempo_total:.2f} segundos")
@@ -283,3 +307,17 @@ def limpiar_cache():
     """Limpia el caché de Streamlit para forzar recarga de datos."""
     st.cache_data.clear()
     print("🗑️ Caché limpiado")
+
+
+def get_info_cache():
+    """
+    Retorna información sobre el estado del caché.
+    Útil para mostrar al usuario cuándo se actualizaron los datos.
+    """
+    info = {
+        'timestamp_actuales': st.session_state.get('timestamp_actuales', None),
+        'timestamp_historicas': st.session_state.get('timestamp_historicas', None),
+        'timestamp_procesamiento': st.session_state.get('timestamp_procesamiento', None),
+        'tiempo_procesamiento': st.session_state.get('tiempo_procesamiento', None)
+    }
+    return info
