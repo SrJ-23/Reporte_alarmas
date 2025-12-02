@@ -17,12 +17,63 @@ def download_csv(url):
         response.raise_for_status()
         
         data = StringIO(response.text)
-        df = pd.read_csv(data)  
+        df = pd.read_csv(data, low_memory=False, dtype_backend='numpy_nullable')
         
         return df
     except Exception as e:
-        print(f"Error al descargar {url}: {e}")
+        print(f"❌ Error al descargar {url}: {e}")
         return pd.DataFrame()
+
+
+def parsear_fecha_multiple_formato(fecha_serie):
+    """
+    Intenta parsear fechas en múltiples formatos comunes.
+    Formatos probados:
+    - %d/%m/%Y %H:%M:%S (01/12/2025 15:30:45)
+    - %Y-%m-%d %H:%M:%S (2025-12-01 15:30:45)
+    - %d-%m-%Y %H:%M:%S (01-12-2025 15:30:45)
+    - ISO 8601 (auto-detectado por pandas)
+    """
+    if fecha_serie.isna().all():
+        return fecha_serie
+    
+    # Lista de formatos a probar en orden
+    formatos = [
+        "%d/%m/%Y %H:%M:%S",  # 01/12/2025 15:30:45
+        "%Y-%m-%d %H:%M:%S",  # 2025-12-01 15:30:45
+        "%d-%m-%Y %H:%M:%S",  # 01-12-2025 15:30:45
+        "%d/%m/%Y %H:%M",     # 01/12/2025 15:30
+        "%Y-%m-%d %H:%M",     # 2025-12-01 15:30
+        "%d/%m/%Y",           # 01/12/2025
+        "%Y-%m-%d",           # 2025-12-01
+    ]
+    
+    resultado = pd.Series([pd.NaT] * len(fecha_serie), index=fecha_serie.index)
+    pendientes = fecha_serie.copy()
+    
+    # Probar cada formato
+    for formato in formatos:
+        if pendientes.notna().sum() == 0:
+            break
+            
+        try:
+            parseadas = pd.to_datetime(pendientes, format=formato, errors='coerce')
+            validas = parseadas.notna()
+            resultado[validas] = parseadas[validas]
+            pendientes[validas] = pd.NA
+        except:
+            continue
+    
+    # Último intento: dejar que pandas infiera el formato
+    if pendientes.notna().sum() > 0:
+        try:
+            parseadas = pd.to_datetime(pendientes, errors='coerce', infer_datetime_format=True)
+            validas = parseadas.notna()
+            resultado[validas] = parseadas[validas]
+        except:
+            pass
+    
+    return resultado
 
     
 def map_name_alarm(code):
@@ -39,14 +90,19 @@ def map_name_alarm(code):
 
 
 def limpiar_num(x):
+    """Convierte números con decimales a enteros (2.0 → 2) y mantiene texto."""
+    if pd.isna(x):
+        return "?"
     try:
-        # Convertir 2.0 -> 2 y mantener texto normal
-        return str(int(float(x))) if str(x).replace('.', '', 1).isdigit() else str(x)
-    except:
-        return str(x)
+        val_float = float(x)
+        if val_float.is_integer():
+            return str(int(val_float))
+        return str(val_float)
+    except (ValueError, TypeError):
+        return str(x).strip() if str(x).strip() else "?"
 
 
-@st.cache_data(ttl=14400)  # 4 horas de caché para históricas (se actualiza 2-3 veces al día)
+@st.cache_data(ttl=14400)
 def get_alarmas_historicas():
     """Descarga SOLO alarmas históricas con caché de 4 horas."""
     print("🔄 Descargando alarmas históricas...")
@@ -55,12 +111,14 @@ def get_alarmas_historicas():
     if not historicas_df.empty:
         if "Gestor" not in historicas_df.columns:
             historicas_df["Gestor"] = "Histórico"
+        
+        historicas_df["_Origen"] = "Histórico"
     
     print(f"✅ Históricas cargadas: {len(historicas_df):,} registros")
     return historicas_df
 
 
-@st.cache_data(ttl=900)  # 15 minutos de caché para alarmas actuales
+@st.cache_data(ttl=900)
 def get_alarmas_actuales():
     """Descarga SOLO alarmas actuales (Huawei y ZTE) con caché de 15 minutos."""
     print("🔄 Descargando alarmas actuales (Huawei + ZTE)...")
@@ -70,8 +128,11 @@ def get_alarmas_actuales():
 
     if not huawei_df.empty:
         huawei_df["Gestor"] = "Huawei"
+        huawei_df["_Origen"] = "Actual_Huawei"
+        
     if not zte_df.empty:
         zte_df["Gestor"] = "ZTE"
+        zte_df["_Origen"] = "Actual_ZTE"
 
     actuales = pd.concat([huawei_df, zte_df], ignore_index=True)
     
@@ -79,7 +140,7 @@ def get_alarmas_actuales():
     return actuales
 
 
-@st.cache_data(ttl=900)  # 15 minutos para el procesamiento completo
+@st.cache_data(ttl=900)
 def get_alarmas():
     """Combina alarmas actuales e históricas + procesa datos de clientes."""
     
@@ -92,14 +153,13 @@ def get_alarmas():
     # Combinar todas las alarmas
     alarmas = pd.concat([alarmas_actuales, alarmas_historicas], ignore_index=True)
     
-    # Si no hay alarmas, devolvemos vacío
     if alarmas.empty:
         print("⚠️ No se encontraron alarmas")
         return alarmas
 
-    print(f"📊 Total combinado: {len(alarmas):,} alarmas")
+    print(f"📊 Total combinado ANTES de procesamiento: {len(alarmas):,} alarmas")
 
-    # --- 🔹 Cargar clientes activos desde Parquet (caché automático por @st.cache_data) ---
+    # --- 🔹 Cargar clientes activos ---
     try:
         clientes = pd.read_parquet("clientes_activos.parquet")
         if "Etiquetas de fila" in clientes.columns:
@@ -112,7 +172,7 @@ def get_alarmas():
     # --- 🔹 Crear columnas extra ---
     if all(col in alarmas.columns for col in ["DEV", "FN", "SN", "PN"]):
         alarmas["DEV_2"] = (
-            alarmas["DEV"].astype(str) + "-" +
+            alarmas["DEV"].fillna("?").astype(str) + "-" +
             alarmas["FN"].apply(limpiar_num) + "-" +
             alarmas["SN"].apply(limpiar_num) + "-" +
             alarmas["PN"].apply(limpiar_num)
@@ -121,7 +181,7 @@ def get_alarmas():
     if "NAME_ALARM" not in alarmas.columns and "FaultID" in alarmas.columns:
         alarmas["NAME_ALARM"] = alarmas["FaultID"].apply(map_name_alarm)
 
-    # --- 🔹 Buscar cliente por DEV_2 ---
+    # --- 🔹 Merge con clientes ---
     if not clientes.empty and "DEV_2" in clientes.columns:
         alarmas = alarmas.merge(
             clientes[["DEV_2", "Total general"]],
@@ -133,12 +193,9 @@ def get_alarmas():
     # --- 🔹 Cruce con clientes TDP ---
     try:
         clientes_tdp = pd.read_parquet("clientes_TDP.parquet")
+        clientes_tdp["SUBSCRIPCION"] = clientes_tdp["SUBSCRIPCION"].astype(str).str.strip()
+        alarmas["AditionalInfo"] = alarmas["AditionalInfo"].astype(str).str.strip()
 
-        # Asegurar tipos compatibles
-        clientes_tdp["SUBSCRIPCION"] = clientes_tdp["SUBSCRIPCION"].astype(str)
-        alarmas["AditionalInfo"] = alarmas["AditionalInfo"].astype(str)
-
-        # Hacer merge: AditionalInfo ↔ SUBSCRIPCION
         alarmas = alarmas.merge(
             clientes_tdp[["SUBSCRIPCION", "SERIAL NUMBER"]],
             left_on="AditionalInfo",
@@ -146,22 +203,50 @@ def get_alarmas():
             how="left"
         )
 
-        # Renombrar columna resultante para mayor claridad
         alarmas = alarmas.rename(columns={"SERIAL NUMBER": "SerialNumber_TDP"})
-
-        # Ya no necesitamos la columna SUBSCRIPCION duplicada del parquet
         alarmas = alarmas.drop(columns=["SUBSCRIPCION"], errors="ignore")
-
         print(f"✅ Cruce con clientes_TDP completado")
-
     except Exception as e:
         print(f"⚠️ Error al cruzar con clientes_TDP.parquet: {e}")
 
-    # --- 🔹 Procesar fechas ---
-    alarmas["HoraPeru"] = pd.to_datetime(alarmas["HoraPeru"], format="%d/%m/%Y %H:%M:%S", errors="coerce")
+    # --- 🔹 PROCESAMIENTO CRÍTICO DE FECHAS (MEJORADO) ---
+    print("\n🔍 Iniciando parseo de fechas con múltiples formatos...")
     
-    # Eliminar filas con fechas inválidas
-    alarmas = alarmas.dropna(subset=["HoraPeru"])
+    if "HoraPeru" in alarmas.columns:
+        # Guardar formato original para diagnóstico (solo primeros valores para no saturar memoria)
+        alarmas["_HoraPeru_Original"] = alarmas["HoraPeru"].astype(str)
+        
+        # Guardar una muestra de formatos originales para debug
+        muestra_fechas = alarmas["HoraPeru"].dropna().head(10).tolist()
+        print(f"📅 Muestra de fechas originales: {muestra_fechas[:3]}")
+        
+        # Aplicar parseo múltiple formato
+        alarmas["HoraPeru"] = parsear_fecha_multiple_formato(alarmas["HoraPeru"])
+        
+        # Estadísticas de parseo
+        total_registros = len(alarmas)
+        fechas_validas = alarmas["HoraPeru"].notna().sum()
+        fechas_invalidas = alarmas["HoraPeru"].isna().sum()
+        tasa_exito = (fechas_validas / total_registros * 100) if total_registros > 0 else 0
+        
+        print(f"✅ Parseo completado:")
+        print(f"   - Fechas válidas: {fechas_validas:,} ({tasa_exito:.1f}%)")
+        print(f"   - Fechas inválidas: {fechas_invalidas:,} ({100-tasa_exito:.1f}%)")
+        
+        # CRÍTICO: Solo eliminar si el % de pérdida es aceptable
+        if fechas_invalidas > 0:
+            porcentaje_perdida = (fechas_invalidas / total_registros * 100)
+            
+            if porcentaje_perdida > 50:
+                print(f"\n⚠️⚠️⚠️ ALERTA: {porcentaje_perdida:.1f}% de datos sin fecha!")
+                print("⚠️ Revisa el formato de fecha en tu archivo histórico")
+                print("⚠️ Se mantendrán todos los registros para investigación")
+                # NO eliminar datos si hay mucha pérdida
+            else:
+                print(f"ℹ️ Eliminando {fechas_invalidas:,} registros sin fecha válida")
+                alarmas = alarmas.dropna(subset=["HoraPeru"])
+    else:
+        print("⚠️ Columna 'HoraPeru' no encontrada en los datos")
     
     # --- 🔹 Calcular tiempo de procesamiento ---
     tiempo_total = (datetime.now() - inicio).total_seconds()
@@ -169,19 +254,23 @@ def get_alarmas():
     # --- 🔹 Estadísticas finales ---
     print("\n" + "="*60)
     print(f"⏱️  TIEMPO DE PROCESAMIENTO: {tiempo_total:.2f} segundos")
-    print(f"📊 TOTAL DE ALARMAS: {len(alarmas):,}")
-    print(f"   - Actuales: {len(alarmas_actuales):,}")
-    print(f"   - Históricas: {len(alarmas_historicas):,}")
+    print(f"📊 TOTAL DE ALARMAS PROCESADAS: {len(alarmas):,}")
     
-    if len(alarmas) > 0:
-        print(f"\n📅 RANGO DE FECHAS:")
-        print(f"   - Más antigua: {alarmas['HoraPeru'].min()}")
-        print(f"   - Más reciente: {alarmas['HoraPeru'].max()}")
+    print(f"\n📦 DISTRIBUCIÓN POR ORIGEN:")
+    if "_Origen" in alarmas.columns:
+        print(alarmas["_Origen"].value_counts().to_string())
     
     print(f"\n📊 DISTRIBUCIÓN POR GESTOR:")
     print(alarmas["Gestor"].value_counts().to_string())
     
-    if not clientes.empty:
+    if len(alarmas) > 0 and "HoraPeru" in alarmas.columns:
+        alarmas_con_fecha = alarmas["HoraPeru"].notna()
+        if alarmas_con_fecha.sum() > 0:
+            print(f"\n📅 RANGO DE FECHAS ({alarmas_con_fecha.sum():,} registros con fecha):")
+            print(f"   - Más antigua: {alarmas.loc[alarmas_con_fecha, 'HoraPeru'].min()}")
+            print(f"   - Más reciente: {alarmas.loc[alarmas_con_fecha, 'HoraPeru'].max()}")
+    
+    if not clientes.empty and "DEV_2" in alarmas.columns:
         coincidencias = alarmas["DEV_2"].isin(clientes["DEV_2"]).sum()
         print(f"\n✅ Coincidencias con clientes: {coincidencias:,} / {len(alarmas):,} ({coincidencias/len(alarmas)*100:.1f}%)")
     
@@ -190,7 +279,6 @@ def get_alarmas():
     return alarmas
 
 
-# Función auxiliar para limpiar caché manualmente si es necesario
 def limpiar_cache():
     """Limpia el caché de Streamlit para forzar recarga de datos."""
     st.cache_data.clear()
