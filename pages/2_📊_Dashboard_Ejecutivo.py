@@ -562,20 +562,29 @@ if not df_filtered.empty and 'DEV' in df_filtered.columns:
                             st.plotly_chart(fig_heat_puerto, use_container_width=True)
                         else:
                             st.info("Sin suficientes datos para mapa de calor")
-                    
+
                     with col_table:
                         # Tabla resumen por tipo de alarma
                         st.markdown("**📋 Tipos de Alarma**")
                         tipos_puerto = df_puerto['TipoFinal'].value_counts().reset_index()
                         tipos_puerto.columns = ['Tipo', 'Cantidad']
-                        st.dataframe(tipos_puerto, hide_index=True, height=300)
+                        st.dataframe(tipos_puerto, hide_index=True, height=200)
+                        
+                        # Top Clientes por SerialNumber
+                        if 'SerialNumber_TDP' in df_puerto.columns:
+                            st.markdown("**🎯 Top Clientes (SerialNumber)**")
+                            clientes_puerto = df_puerto['SerialNumber_TDP'].value_counts().head(10).reset_index()
+                            clientes_puerto.columns = ['SerialNumber', 'Alarmas']
+                            st.dataframe(clientes_puerto, hide_index=True, height=250)
                         
                         # Severidad
                         if 'Severity' in df_puerto.columns:
                             st.markdown("**⚠️ Severidad**")
                             severity_puerto = df_puerto['Severity'].value_counts().reset_index()
                             severity_puerto.columns = ['Severidad', 'Cantidad']
-                            st.dataframe(severity_puerto, hide_index=True, height=200)
+                            st.dataframe(severity_puerto, hide_index=True, height=150)
+                    
+
                     
                     # Tabla detallada expandible
                     with st.expander("📂 Ver Detalle Completo de Alarmas", expanded=False):
