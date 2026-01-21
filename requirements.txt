@@ -8,3 +8,6 @@ google-auth==2.40.3
 google-auth-oauthlib==1.2.2
 gspread==6.2.1
 requests==2.32.3
+supabase==2.27.2
+supabase-auth==2.27.2
+supabase-functions==2.27.2
