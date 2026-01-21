@@ -2,11 +2,11 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
-from scripts.fetch_data import get_alarmas
+from scripts.fetch_data import get_alarmas_completas, get_info_cache
 from datetime import datetime, timedelta
 
 # Configuración de página
-st.set_page_config(page_title="Dashboard Histórico Huawei - ADCE", layout="wide", page_icon="📉")
+st.set_page_config(page_title="Dashboard Histórico - ADCE", layout="wide", page_icon="📉")
 
 # --- ESTILOS CSS ---
 st.markdown("""
@@ -30,8 +30,23 @@ st.markdown("""
 st.title("📉 Dashboard Histórico de Alarmas")
 st.markdown("**Alcance:** Análisis histórico completo - Todos los gestores")
 
-# --- CARGA DE DATOS ---
-# 🆕 Botón de actualización en el header
+# --- INICIALIZACIÓN DE SESSION STATE ---
+if "data" not in st.session_state:
+    st.session_state.data = None
+
+if "fecha_rango_prev" not in st.session_state:
+    st.session_state.fecha_rango_prev = None
+
+if "incluir_actuales_prev" not in st.session_state:
+    st.session_state.incluir_actuales_prev = True
+
+if 'drill_olt_selected' not in st.session_state:
+    st.session_state.drill_olt_selected = None
+
+if 'drill_dev2_selected' not in st.session_state:
+    st.session_state.drill_dev2_selected = None
+
+# --- HEADER CON BOTÓN DE ACTUALIZACIÓN ---
 col_header1, col_header2, col_header3 = st.columns([3, 1, 1])
 
 with col_header1:
@@ -39,7 +54,6 @@ with col_header1:
 
 with col_header2:
     # Mostrar última actualización
-    from scripts.fetch_data import get_info_cache
     info_cache = get_info_cache()
     
     if info_cache['timestamp_procesamiento']:
@@ -60,27 +74,85 @@ with col_header2:
 
 with col_header3:
     if st.button("🔄 Actualizar", type="primary", use_container_width=True, key="update_header"):
-        with st.spinner("Actualizando datos desde Google Sheets..."):
-            # Limpiar session_state
-            if 'data' in st.session_state:
-                del st.session_state.data
-            if 'drill_olt_selected' in st.session_state:
-                del st.session_state.drill_olt_selected
-            if 'drill_dev2_selected' in st.session_state:
-                del st.session_state.drill_dev2_selected
+        with st.spinner("Actualizando datos..."):
+            # Limpiar caché y session_state
+            st.cache_data.clear()
+            st.session_state.data = None
+            st.session_state.fecha_rango_prev = None
+            st.session_state.drill_olt_selected = None
+            st.session_state.drill_dev2_selected = None
             
-            # Recargar con forzar_recarga=True
-            raw_data = get_alarmas(forzar_recarga=True)
-            st.session_state.data = raw_data
-            
-            st.success("✅ Datos actualizados correctamente")
+            st.success("✅ Caché limpiado. Los datos se recargarán con los nuevos filtros.")
             st.rerun()
 
-# Cargar datos normalmente si no están en session_state
-if "data" not in st.session_state:
-    with st.spinner("Cargando histórico de alarmas..."):
-        raw_data = get_alarmas(forzar_recarga=False)
-        st.session_state.data = raw_data
+# --- SELECTOR DE FECHAS Y OPCIONES ---
+with st.container():
+    st.subheader("🔍 Configuración de Rango")
+    
+    col1, col2 = st.columns([3, 1])
+    
+    with col1:
+        # Obtener rango de fechas disponible (default: últimos 7 días)
+        fecha_max_default = datetime.now().date()
+        fecha_min_default = fecha_max_default - timedelta(days=7)
+        
+        fechas_seleccionadas = st.date_input(
+            "📅 Selecciona el rango de fechas",
+            value=(fecha_min_default, fecha_max_default),
+            help="Selecciona el rango para cargar alarmas históricas",
+            key="date_range_main"
+        )
+        
+        # Manejo de fechas
+        if isinstance(fechas_seleccionadas, tuple):
+            if len(fechas_seleccionadas) == 2:
+                start_date, end_date = fechas_seleccionadas
+            elif len(fechas_seleccionadas) == 1:
+                start_date = end_date = fechas_seleccionadas[0]
+            else:
+                start_date, end_date = fecha_min_default, fecha_max_default
+        else:
+            start_date = end_date = fechas_seleccionadas
+    
+    with col2:
+        # CHECKBOX PARA INCLUIR ACTUALES
+        incluir_actuales = st.checkbox(
+            "📡 Incluir alarmas actuales",
+            value=True,
+            help="Si está marcado, incluye las alarmas actuales de Google Sheets junto con las históricas",
+            key="incluir_actuales_checkbox"
+        )
+        
+        # Mostrar info sobre qué se cargará
+        if incluir_actuales:
+            st.info("📊 Cargará: Históricas + Actuales")
+        else:
+            st.info("📚 Cargará: Solo Históricas")
+
+# --- DETECTAR CAMBIOS Y RECARGAR ---
+cambio_detectado = False
+
+if st.session_state.fecha_rango_prev != (start_date, end_date):
+    cambio_detectado = True
+    st.session_state.fecha_rango_prev = (start_date, end_date)
+
+if st.session_state.incluir_actuales_prev != incluir_actuales:
+    cambio_detectado = True
+    st.session_state.incluir_actuales_prev = incluir_actuales
+
+# Si hay cambios, limpiar datos para forzar recarga
+if cambio_detectado:
+    st.session_state.data = None
+    st.cache_data.clear()
+
+# --- CARGA DE DATOS ---
+if st.session_state.data is None:
+    with st.spinner(f"Cargando datos del {start_date} al {end_date}..."):
+        st.session_state.data = get_alarmas_completas(
+            start_date, 
+            end_date, 
+            incluir_actuales=incluir_actuales
+        )
 
 df_original = st.session_state.data.copy()
 
@@ -91,31 +163,27 @@ with col_info1:
     st.success(f"✅ {len(df_original):,} registros cargados correctamente")
 
 with col_info2:
-    info_cache = get_info_cache()
-    if info_cache['timestamp_actuales']:
+    if incluir_actuales and info_cache['timestamp_actuales']:
         st.caption(f"📡 Actuales: {info_cache['timestamp_actuales'].strftime('%H:%M:%S')}")
 
 with col_info3:
     if info_cache['timestamp_historicas']:
         st.caption(f"📚 Históricas: {info_cache['timestamp_historicas'].strftime('%H:%M:%S')}")
 
-# --- DECISIÓN: ¿FILTRAR O NO POR GESTOR? ---
-st.info("💡 **Importante**: Este dashboard ahora muestra TODAS las alarmas. Usa el filtro de 'Gestor' para ver específicamente Huawei, ZTE o Histórico.")
-
-# --- USAR TODOS LOS DATOS (SIN FILTRAR POR GESTOR) ---
+# Usar todos los datos
 df = df_original.copy()
 
 if df.empty:
-    st.error("No se encontraron datos históricos 😢")
+    st.error("No se encontraron datos en el rango seleccionado 😢")
     st.stop()
 
 # --- PREPROCESAMIENTO ---
-df['Fecha'] = df['HoraPeru'].dt.date
+if 'Fecha' not in df.columns and 'HoraPeru' in df.columns:
+    df['Fecha'] = pd.to_datetime(df['HoraPeru']).dt.date
 
 # Asegurar TipoFinal
 if 'TipoFinal' not in df.columns:
     st.error("⚠️ **CRÍTICO**: Columna 'TipoFinal' no existe en los datos")
-    st.write("Columnas disponibles:", df.columns.tolist())
     
     if 'Severity' in df.columns:
         st.info("Usando 'Severity' como tipo de alarma temporal")
@@ -125,29 +193,20 @@ if 'TipoFinal' not in df.columns:
 else:
     # Corregir encoding
     df['TipoFinal'] = df['TipoFinal'].astype(str).str.encode('latin1', errors='ignore').str.decode('utf-8', errors='ignore')
-    
-    tipos_unicos = df['TipoFinal'].nunique()
-    tipos_null = df['TipoFinal'].isna().sum()
-    
-    if tipos_unicos == 0 or tipos_null == len(df):
-        st.error(f"⚠️ **CRÍTICO**: TipoFinal está vacío en todas las filas")
-        df['TipoFinal'] = 'Sin clasificar'
-    elif tipos_null > 0:
-        df['TipoFinal'] = df['TipoFinal'].fillna('Otros')
+    df['TipoFinal'] = df['TipoFinal'].fillna('Otros')
 
 # Verificar fechas válidas
-fechas_validas = df['HoraPeru'].notna().sum()
-fechas_invalidas = df['HoraPeru'].isna().sum()
-
-if fechas_invalidas > 0:
-    st.warning(f"⚠️ {fechas_invalidas:,} alarmas sin fecha válida. Mostrando solo {fechas_validas:,} registros con fecha.")
-    df = df.dropna(subset=["HoraPeru"])
+if 'HoraPeru' in df.columns:
+    fechas_invalidas = df['HoraPeru'].isna().sum()
+    if fechas_invalidas > 0:
+        st.warning(f"⚠️ {fechas_invalidas:,} alarmas sin fecha válida fueron excluidas.")
+        df = df.dropna(subset=["HoraPeru"])
 
 # --- FILTROS UNIFICADOS ---
 with st.container():
     st.subheader("🔍 Filtros de Visualización")
     
-    # Botón para resetear filtros
+    # Botones de control
     col_reset1, col_reset2, col_reset3 = st.columns([2, 1, 1])
     with col_reset2:
         if st.button("🔄 Resetear Filtros", type="secondary", key="reset_filters"):
@@ -159,61 +218,70 @@ with st.container():
     
     with col_reset3:
         if st.button("✅ Seleccionar Todos", type="primary", key="select_all"):
-            tipos_disponibles_reset = sorted(df['TipoFinal'].dropna().unique().tolist())
-            gestores_disponibles_reset = sorted(df['Gestor'].dropna().unique().tolist())
+            tipos_disponibles_reset = sorted([t for t in df['TipoFinal'].dropna().unique() if pd.notna(t)])
+            gestores_disponibles_reset = sorted([g for g in df['Gestor'].dropna().unique() if pd.notna(g)])
             st.session_state.tipos_seleccionados = tipos_disponibles_reset
             st.session_state.gestores_seleccionados = gestores_disponibles_reset
             st.rerun()
     
-    col1, col2, col3, col4 = st.columns([1, 1, 1, 2])
-    
+    col1, col2, col3 = st.columns([1, 1, 2])
+  
     with col1:
         # Filtro de Gestor
-        gestores_disponibles = sorted(df['Gestor'].dropna().unique().tolist())
+        gestores_disponibles = sorted([g for g in df['Gestor'].dropna().unique() if pd.notna(g)])
         
+        if not gestores_disponibles:
+            gestores_disponibles = ["Sin Datos"]
+
         if 'gestores_seleccionados' not in st.session_state:
             st.session_state.gestores_seleccionados = gestores_disponibles
-        
+        else:
+            st.session_state.gestores_seleccionados = [
+                g for g in st.session_state.gestores_seleccionados 
+                if g in gestores_disponibles
+            ]
+            
+            if not st.session_state.gestores_seleccionados:
+                st.session_state.gestores_seleccionados = gestores_disponibles
+
         gestor_filtro = st.multiselect(
             "Filtrar por Gestor",
-            gestores_disponibles,
+            options=gestores_disponibles,
             default=st.session_state.gestores_seleccionados,
-            key='multiselect_gestores',
-            help="Selecciona Huawei, ZTE, Histórico, etc."
+            key='multiselect_gestores'
         )
-        
-        if gestor_filtro:
-            st.session_state.gestores_seleccionados = gestor_filtro
-        else:
-            gestor_filtro = gestores_disponibles
-            st.session_state.gestores_seleccionados = gestores_disponibles
-        
-        st.caption(f"Gestores: {len(gestor_filtro)}/{len(gestores_disponibles)}")
 
     with col2:
         # Filtro de OLT
-        olts_disponibles = sorted(df['DEV'].dropna().unique().tolist())
+        olts_disponibles = sorted([o for o in df['DEV'].dropna().unique() if pd.notna(o)])
         olt_seleccionada = st.selectbox(
             "Seleccionar OLT",
             ["Todas"] + olts_disponibles,
             index=0,
-            help="Selecciona 'Todas' para ver el Top 5 global, o una específica para detalle."
+            help="Selecciona 'Todas' para vista global, o una específica para detalle."
         )
 
     with col3:
         # Filtro por Tipo de Alarma
-        tipos_disponibles = sorted(df['TipoFinal'].dropna().unique().tolist())
-        tipo_con_conteo = df['TipoFinal'].value_counts().to_dict()
+        tipos_disponibles = sorted([t for t in df['strName'].dropna().unique() if pd.notna(t)])
         
         st.write("**Filtrar Tipo de Alarma:**")
         
         with st.expander("📊 Ver distribución de tipos", expanded=False):
+            tipo_con_conteo = df['strName'].value_counts().to_dict()
             for tipo in tipos_disponibles:
                 cantidad = tipo_con_conteo.get(tipo, 0)
                 st.write(f"- **{tipo}**: {cantidad:,} alarmas")
         
         if 'tipos_seleccionados' not in st.session_state:
             st.session_state.tipos_seleccionados = tipos_disponibles
+        else:
+            st.session_state.tipos_seleccionados = [
+                t for t in st.session_state.tipos_seleccionados 
+                if t in tipos_disponibles and pd.notna(t)
+            ]
+            if not st.session_state.tipos_seleccionados:
+                st.session_state.tipos_seleccionados = tipos_disponibles
         
         tipo_filtro_temp = st.multiselect(
             f"Selecciona tipos ({len(tipos_disponibles)} disponibles)",
@@ -233,37 +301,11 @@ with st.container():
         
         st.caption(f"Seleccionados: {len(tipo_filtro)}/{len(tipos_disponibles)} tipos")
 
-    with col4:
-        # Selector de Rango de Fechas
-        fecha_min_df = df["Fecha"].min()
-        fecha_max_df = df["Fecha"].max()
-        
-        fecha_inicio_default = max(fecha_max_df - timedelta(days=30), fecha_min_df)
-        
-        fechas_seleccionadas = st.date_input(
-            f"Rango de Fechas (disponible: {fecha_min_df} a {fecha_max_df})",
-            value=(fecha_inicio_default, fecha_max_df),
-            min_value=fecha_min_df,
-            max_value=fecha_max_df,
-            help=f"Datos disponibles desde {fecha_min_df} hasta {fecha_max_df}"
-        )
-
-# Manejo de fechas
-if isinstance(fechas_seleccionadas, tuple):
-    if len(fechas_seleccionadas) == 2:
-        start_date, end_date = fechas_seleccionadas
-    elif len(fechas_seleccionadas) == 1:
-        start_date = end_date = fechas_seleccionadas[0]
-    else:
-        start_date, end_date = fecha_min_df, fecha_max_df
-else:
-    start_date, end_date = fechas_seleccionadas, fechas_seleccionadas
-
 # --- APLICAR FILTROS ---
 mask = (
     (df['Fecha'] >= start_date) & 
     (df['Fecha'] <= end_date) &
-    (df['TipoFinal'].isin(tipo_filtro)) &
+    (df['strName'].isin(tipo_filtro)) &
     (df['Gestor'].isin(gestor_filtro))
 )
 
@@ -272,36 +314,6 @@ if olt_seleccionada != "Todas":
 
 df_filtered = df[mask].copy()
 
-# --- RESUMEN EJECUTIVO DE FILTRADO ---
-st.markdown("---")
-col_sum1, col_sum2, col_sum3, col_sum4 = st.columns(4)
-
-with col_sum1:
-    st.metric(
-        "📊 Alarmas Filtradas", 
-        f"{len(df_filtered):,}",
-        delta=f"{len(df_filtered) - len(df):,} vs total"
-    )
-
-with col_sum2:
-    pct_filtrado = (len(df_filtered) / len(df) * 100) if len(df) > 0 else 0
-    st.metric(
-        "📈 % del Dataset", 
-        f"{pct_filtrado:.1f}%"
-    )
-
-with col_sum3:
-    st.metric(
-        "📅 Días Analizados",
-        f"{(end_date - start_date).days + 1}"
-    )
-
-with col_sum4:
-    st.metric(
-        "🔧 Tipos Activos",
-        f"{len(tipo_filtro)}/{len(df['TipoFinal'].unique())}"
-    )
-
 # Validación de datos filtrados
 if len(df_filtered) == 0:
     st.error("❌ **No hay datos** con los filtros actuales. Por favor, ajusta los filtros.")
@@ -309,7 +321,7 @@ if len(df_filtered) == 0:
 
 st.markdown("---")
 
-# --- KPIs METRICS ---
+# --- KPIs METRICS (SOLO LOS 4 PRINCIPALES) ---
 def mostrar_kpis(df_kpi, df_total_hist):
     col1, col2, col3, col4 = st.columns(4)
     
@@ -335,11 +347,311 @@ def mostrar_kpis(df_kpi, df_total_hist):
     with col4:
         st.metric("Promedio Diario", f"{total_alarmas/max(dias_rango, 1):.0f}")
 
-st.divider()
 mostrar_kpis(df_filtered, df)
 st.divider()
 
 # --- GRÁFICO PRINCIPAL (COMBO: BARRAS TIPO FINAL + LÍNEAS OLT) ---
+st.divider()
+st.subheader("🏆 Top 20 Puertos Problemáticos (Vista Global)")
+
+if not df_filtered.empty and 'DEV_2' in df_filtered.columns:
+    top_puertos_global = df_filtered['DEV_2'].value_counts().head(20).reset_index()
+    top_puertos_global.columns = ['Puerto', 'Total_Alarmas']
+    
+    # Calcular % de participación
+    total_alarmas_global = df_filtered.shape[0]
+    top_puertos_global['Participación (%)'] = (top_puertos_global['Total_Alarmas'] / total_alarmas_global * 100).round(2)
+    
+    # Agregar columna de OLT
+    if 'DEV' in df_filtered.columns:
+        olt_por_puerto = df_filtered.groupby('DEV_2')['DEV'].first().to_dict()
+        top_puertos_global['OLT'] = top_puertos_global['Puerto'].map(olt_por_puerto)
+    
+    col_top1, col_top2 = st.columns([2, 1])
+    
+    with col_top1:
+        fig_top = px.bar(
+            top_puertos_global,
+            x='Puerto',
+            y='Total_Alarmas',
+            text='Total_Alarmas',
+            color='Total_Alarmas',
+            color_continuous_scale='RdYlGn_r',
+            title="Top 20 Puertos con Más Alarmas",
+            hover_data=['OLT', 'Participación (%)'] if 'OLT' in top_puertos_global.columns else ['Participación (%)']
+        )
+        fig_top.update_traces(textposition='outside')
+        fig_top.update_layout(
+            xaxis_tickangle=-45,
+            height=400,
+            showlegend=False
+        )
+        st.plotly_chart(fig_top, use_container_width=True)
+    
+    with col_top2:
+        st.dataframe(
+            top_puertos_global,
+            hide_index=True,
+            height=400,
+            use_container_width=True
+        )
+else:
+    st.info("No hay datos disponibles para mostrar el ranking de puertos")
+
+
+
+
+
+# --- 🔍 ANÁLISIS DRILL-DOWN INTERACTIVO ---
+st.divider()
+st.subheader("🔍 Análisis Drill-Down Interactivo")
+
+# Botón para resetear navegación
+col_reset_drill, col_space = st.columns([1, 5])
+with col_reset_drill:
+    if st.button("🔄 Resetear Vista", key="reset_drill"):
+        st.session_state.drill_olt_selected = None
+        st.session_state.drill_dev2_selected = None
+        st.rerun()
+
+# --- NIVEL 1: VISTA POR OLT ---
+st.markdown("### 📡 Nivel 1: Alarmas por OLT")
+
+if not df_filtered.empty and 'DEV' in df_filtered.columns:
+    alarmas_por_olt = df_filtered.groupby('DEV').size().reset_index(name='Total_Alarmas')
+    alarmas_por_olt = alarmas_por_olt.sort_values('Total_Alarmas', ascending=False)
+    
+    # Gráfico solo con Top 20
+    alarmas_por_olt_top20 = alarmas_por_olt.head(20)
+    
+    fig_olt = px.bar(
+        alarmas_por_olt_top20,
+        x='DEV',
+        y='Total_Alarmas',
+        text='Total_Alarmas',
+        color='Total_Alarmas',
+        color_continuous_scale='Reds',
+        title=f"Distribución de Alarmas por OLT (Top 20 de {len(alarmas_por_olt)} OLTs)"
+    )
+    fig_olt.update_traces(textposition='outside')
+    fig_olt.update_layout(
+        xaxis_title="OLT",
+        yaxis_title="Cantidad de Alarmas",
+        height=400,
+        showlegend=False
+    )
+    
+    st.plotly_chart(fig_olt, use_container_width=True)
+    
+    # Selector manual de OLT - TODAS LAS OLTs DISPONIBLES
+    olt_seleccionada_drill = st.selectbox(
+        "👉 Selecciona una OLT para análisis detallado:",
+        ["Ninguna"] + alarmas_por_olt['DEV'].tolist(),  # TODAS, no solo Top 20
+        index=0 if st.session_state.drill_olt_selected is None else 
+              alarmas_por_olt['DEV'].tolist().index(st.session_state.drill_olt_selected) + 1 
+              if st.session_state.drill_olt_selected in alarmas_por_olt['DEV'].tolist() else 0,
+        key="select_olt_drill"
+    )
+    
+    if olt_seleccionada_drill != "Ninguna":
+        st.session_state.drill_olt_selected = olt_seleccionada_drill
+        
+        # --- NIVEL 2: VISTA POR DEV_2 ---
+        st.markdown(f"### 🔌 Nivel 2: Puertos de OLT `{olt_seleccionada_drill}`")
+        
+        df_olt_filtrada = df_filtered[df_filtered['DEV'] == olt_seleccionada_drill]
+        
+        if 'DEV_2' in df_olt_filtrada.columns:
+            alarmas_por_dev2 = df_olt_filtrada.groupby('DEV_2').size().reset_index(name='Total_Alarmas')
+            alarmas_por_dev2 = alarmas_por_dev2.sort_values('Total_Alarmas', ascending=False).head(20)
+            
+            fig_dev2 = px.bar(
+                alarmas_por_dev2,
+                x='DEV_2',
+                y='Total_Alarmas',
+                text='Total_Alarmas',
+                color='Total_Alarmas',
+                color_continuous_scale='Oranges',
+                title=f"Top 20 Puertos con más alarmas en {olt_seleccionada_drill}"
+            )
+            fig_dev2.update_traces(textposition='outside')
+            fig_dev2.update_layout(
+                xaxis_title="Puerto (Slot-Puerto)",
+                yaxis_title="Cantidad de Alarmas",
+                height=400,
+                showlegend=False,
+                xaxis_tickangle=-45
+            )
+            
+            st.plotly_chart(fig_dev2, use_container_width=True)
+            
+            # Selector manual de DEV_2
+            dev2_seleccionado_drill = st.selectbox(
+                "👉 Selecciona un Puerto para ver detalles:",
+                ["Ninguno"] + alarmas_por_dev2['DEV_2'].tolist(),
+                index=0 if st.session_state.drill_dev2_selected is None else
+                      alarmas_por_dev2['DEV_2'].tolist().index(st.session_state.drill_dev2_selected) + 1
+                      if st.session_state.drill_dev2_selected in alarmas_por_dev2['DEV_2'].tolist() else 0,
+                key="select_dev2_drill"
+            )
+            
+            if dev2_seleccionado_drill != "Ninguno":
+                st.session_state.drill_dev2_selected = dev2_seleccionado_drill
+                
+                # --- NIVEL 3: ANÁLISIS DETALLADO DEL PUERTO ---
+                st.markdown(f"### 📊 Nivel 3: Análisis Detallado de `{dev2_seleccionado_drill}`")
+                
+                df_puerto = df_filtered[
+                    (df_filtered['DEV'] == olt_seleccionada_drill) &
+                    (df_filtered['DEV_2'] == dev2_seleccionado_drill)
+                ]
+                
+                if not df_puerto.empty:
+                    st.info(f"🔍 {len(df_puerto):,} alarmas encontradas en este puerto")
+                    
+                    col_graph, col_table = st.columns([2, 1])
+                    
+                    with col_graph:
+                        # Gráfico temporal de evolución
+                        st.markdown("**📈 Evolución Temporal**")
+                        daily_puerto = df_puerto.groupby('Fecha').size().reset_index(name='Cantidad')
+                        
+                        fig_evol = px.line(
+                            daily_puerto,
+                            x='Fecha',
+                            y='Cantidad',
+                            markers=True,
+                            title=f"Alarmas diarias en {dev2_seleccionado_drill}"
+                        )
+                        fig_evol.update_layout(height=300)
+                        st.plotly_chart(fig_evol, use_container_width=True)
+                        
+                        # Mapa de calor
+                        st.markdown("**⏰ Mapa de Calor: Hora vs Tipo de Alarma**")
+                        df_puerto_heat = df_puerto.copy()
+                        df_puerto_heat['Hora'] = pd.to_datetime(df_puerto_heat['HoraPeru']).dt.hour
+                        
+                        heatmap_puerto = df_puerto_heat.groupby(['Hora', 'TipoFinal']).size().reset_index(name='Conteo')
+                        
+                        if not heatmap_puerto.empty:
+                            fig_heat_puerto = px.density_heatmap(
+                                heatmap_puerto,
+                                x='Hora',
+                                y='TipoFinal',
+                                z='Conteo',
+                                nbinsx=24,
+                                color_continuous_scale='Viridis'
+                            )
+                            fig_heat_puerto.update_xaxes(dtick=1)
+                            fig_heat_puerto.update_layout(height=300)
+                            st.plotly_chart(fig_heat_puerto, use_container_width=True)
+
+                    with col_table:
+                        # Tabla resumen
+                        st.markdown("**📋 Tipos de Alarma**")
+                        tipos_puerto = df_puerto['strName'].value_counts().reset_index()
+                        tipos_puerto.columns = ['Tipo', 'Cantidad']
+                        st.dataframe(tipos_puerto, hide_index=True, height=200)
+                        
+                        # Severidad
+                        if 'Severity' in df_puerto.columns:
+                            st.markdown("**⚠️ Severidad**")
+                            severity_puerto = df_puerto['Severity'].value_counts().reset_index()
+                            severity_puerto.columns = ['Severidad', 'Cantidad']
+                            st.dataframe(severity_puerto, hide_index=True, height=200)
+                    
+                    # --- TABLA PIVOT DINÁMICA (VISIBLE, NO EN EXPANDER) ---
+                    st.markdown("---")
+                    st.markdown("**📊 Tabla Dinámica: Alarmas por Fecha**")
+                    
+                    # Verificar que existan las columnas necesarias
+                    if 'Fecha' in df_puerto.columns:
+                        # Crear tabla pivot
+                        df_pivot_prep = df_puerto.copy()
+                        
+                        # Asegurar que Fecha esté en formato correcto
+                        df_pivot_prep['Fecha_Str'] = pd.to_datetime(df_pivot_prep['Fecha']).dt.strftime('%Y-%m-%d')
+                        
+                        # Determinar qué columnas usar para agrupar
+                        columnas_agrupacion = []
+                        
+                        # Detectar columna de tipo de alarma (prioridad: strAckUserName > TipoFinal > NAME_ALARM)
+                        col_tipo_alarma = None
+                        if 'strName' in df_pivot_prep.columns:
+                            col_tipo_alarma = 'strName'
+                        elif 'TipoFinal' in df_pivot_prep.columns:
+                            col_tipo_alarma = 'TipoFinal'
+                        elif 'NAME_ALARM' in df_pivot_prep.columns:
+                            col_tipo_alarma = 'NAME_ALARM'
+                        
+
+
+                        if col_tipo_alarma:
+                            columnas_agrupacion.append(col_tipo_alarma)
+                        
+                        # Agregar otras columnas esenciales
+                        
+                        if 'SerialNumber_TDP' in df_pivot_prep.columns:
+                            columnas_agrupacion.append('SerialNumber_TDP')
+                        if 'DID' in df_pivot_prep.columns:
+                            columnas_agrupacion.append('DID')
+                        if 'ONTID' in df_pivot_prep.columns:
+                            columnas_agrupacion.append('ONTID')
+                        
+                        # Agregar Fecha_Str para el pivot
+                        columnas_agrupacion.append('Fecha_Str')
+                        
+                        if len(columnas_agrupacion) >= 2:  # Al menos 1 columna identificadora + Fecha
+                            # Crear pivot table con suma de alarmas
+                            tabla_pivot = df_pivot_prep.groupby(
+                                [col for col in columnas_agrupacion if col != 'Fecha_Str'] + ['Fecha_Str']
+                            ).size().unstack(fill_value=0)
+                            
+                            # Agregar columna Total
+                            tabla_pivot['Total'] = tabla_pivot.sum(axis=1)
+                            
+                            # Ordenar por Total descendente
+                            tabla_pivot = tabla_pivot.sort_values('Total', ascending=False)
+                            
+                            # Resetear índice para mostrar todas las columnas
+                            tabla_pivot = tabla_pivot.reset_index()
+                            
+                            # Renombrar columnas si es necesario
+                            if col_tipo_alarma:
+                                nombres_columnas = {col_tipo_alarma: 'Tipo Alarma'}
+                            else:
+                                nombres_columnas = {}
+                            
+                            tabla_pivot = tabla_pivot.rename(columns=nombres_columnas)
+                            
+                            # Mostrar tabla
+                            st.dataframe(
+                                tabla_pivot,
+                                use_container_width=True,
+                                height=400
+                            )
+                            
+                            # Botón para descargar
+                            st.download_button(
+                                label="📥 Descargar Tabla Pivot (.csv)",
+                                data=tabla_pivot.to_csv(index=False).encode('utf-8'),
+                                file_name=f"pivot_{olt_seleccionada_drill}_{dev2_seleccionado_drill}.csv",
+                                mime="text/csv",
+                                key=f"download_pivot_{dev2_seleccionado_drill}"
+                            )
+                        else:
+                            st.warning("⚠️ No hay suficientes columnas para crear la tabla pivot")
+                    else:
+                        st.warning("⚠️ Columna 'Fecha' no disponible para crear la tabla pivot")
+                else:
+                    st.warning("No hay alarmas para este puerto en el rango seleccionado")
+        else:
+            st.warning("⚠️ Columna 'DEV_2' no disponible en los datos")
+else:
+    st.info("Selecciona filtros para comenzar el análisis")
+
+# --- 🏆 TOP 20 PUERTOS PROBLEMÁTICOS (VISTA GLOBAL) ---
+    
 def crear_grafico_combo(df_in, olt_sel):
     """Gráfico Combinado: Barras Apiladas por TipoFinal + Líneas de OLTs"""
     if df_in.empty:
@@ -411,244 +723,6 @@ def crear_grafico_combo(df_in, olt_sel):
 st.subheader("📊 Evolutivo Principal")
 st.plotly_chart(crear_grafico_combo(df_filtered, olt_seleccionada), use_container_width=True)
 
-# --- 🔍 ANÁLISIS DRILL-DOWN INTERACTIVO: OLT → DEV_2 → TIPO ALARMA ---
-st.divider()
-st.subheader("🔍 Análisis Drill-Down Interactivo")
-
-# Inicializar variables de navegación en session_state
-if 'drill_olt_selected' not in st.session_state:
-    st.session_state.drill_olt_selected = None
-if 'drill_dev2_selected' not in st.session_state:
-    st.session_state.drill_dev2_selected = None
-
-# Botón para resetear navegación
-col_reset_drill, col_space = st.columns([1, 5])
-with col_reset_drill:
-    if st.button("🔄 Resetear Vista", key="reset_drill"):
-        st.session_state.drill_olt_selected = None
-        st.session_state.drill_dev2_selected = None
-        st.rerun()
-
-# --- NIVEL 1: VISTA POR OLT ---
-st.markdown("### 📡 Nivel 1: Alarmas por OLT")
-
-if not df_filtered.empty and 'DEV' in df_filtered.columns:
-    # Agrupar por OLT
-    alarmas_por_olt = df_filtered.groupby('DEV').size().reset_index(name='Total_Alarmas')
-    alarmas_por_olt = alarmas_por_olt.sort_values('Total_Alarmas', ascending=False).head(20)
-    
-    # Gráfico de barras por OLT
-    fig_olt = px.bar(
-        alarmas_por_olt,
-        x='DEV',
-        y='Total_Alarmas',
-        text='Total_Alarmas',
-        color='Total_Alarmas',
-        color_continuous_scale='Reds',
-        title=f"Distribución de Alarmas por OLT ({len(alarmas_por_olt)} OLTs)"
-    )
-    fig_olt.update_traces(textposition='outside')
-    fig_olt.update_layout(
-        xaxis_title="OLT",
-        yaxis_title="Cantidad de Alarmas",
-        height=400,
-        showlegend=False
-    )
-    
-    st.plotly_chart(fig_olt, use_container_width=True)
-    
-    # Selector manual de OLT
-    olt_seleccionada_drill = st.selectbox(
-        "👉 Selecciona una OLT para análisis detallado:",
-        ["Ninguna"] + alarmas_por_olt['DEV'].tolist(),
-        index=0 if st.session_state.drill_olt_selected is None else 
-              alarmas_por_olt['DEV'].tolist().index(st.session_state.drill_olt_selected) + 1 
-              if st.session_state.drill_olt_selected in alarmas_por_olt['DEV'].tolist() else 0,
-        key="select_olt_drill"
-    )
-    
-    if olt_seleccionada_drill != "Ninguna":
-        st.session_state.drill_olt_selected = olt_seleccionada_drill
-        
-        # --- NIVEL 2: VISTA POR DEV_2 (SLOT-PUERTO) ---
-        st.markdown(f"### 🔌 Nivel 2: Puertos de OLT `{olt_seleccionada_drill}`")
-        
-        df_olt_filtrada = df_filtered[df_filtered['DEV'] == olt_seleccionada_drill]
-        
-        if 'DEV_2' in df_olt_filtrada.columns:
-            alarmas_por_dev2 = df_olt_filtrada.groupby('DEV_2').size().reset_index(name='Total_Alarmas')
-            alarmas_por_dev2 = alarmas_por_dev2.sort_values('Total_Alarmas', ascending=False).head(20)
-            
-            fig_dev2 = px.bar(
-                alarmas_por_dev2,
-                x='DEV_2',
-                y='Total_Alarmas',
-                text='Total_Alarmas',
-                color='Total_Alarmas',
-                color_continuous_scale='Oranges',
-                title=f"Top 20 Puertos (DEV_2) con más alarmas en {olt_seleccionada_drill}"
-            )
-            fig_dev2.update_traces(textposition='outside')
-            fig_dev2.update_layout(
-                xaxis_title="Puerto (Slot-Puerto)",
-                yaxis_title="Cantidad de Alarmas",
-                height=400,
-                showlegend=False,
-                xaxis_tickangle=-45
-            )
-            
-            st.plotly_chart(fig_dev2, use_container_width=True)
-            
-            # Selector manual de DEV_2
-            dev2_seleccionado_drill = st.selectbox(
-                "👉 Selecciona un Puerto para ver detalles:",
-                ["Ninguno"] + alarmas_por_dev2['DEV_2'].tolist(),
-                index=0 if st.session_state.drill_dev2_selected is None else
-                      alarmas_por_dev2['DEV_2'].tolist().index(st.session_state.drill_dev2_selected) + 1
-                      if st.session_state.drill_dev2_selected in alarmas_por_dev2['DEV_2'].tolist() else 0,
-                key="select_dev2_drill"
-            )
-            
-            if dev2_seleccionado_drill != "Ninguno":
-                st.session_state.drill_dev2_selected = dev2_seleccionado_drill
-                
-                # --- NIVEL 3: ANÁLISIS DETALLADO DEL PUERTO ---
-                st.markdown(f"### 📊 Nivel 3: Análisis Detallado de `{dev2_seleccionado_drill}`")
-                
-                df_puerto = df_filtered[
-                    (df_filtered['DEV'] == olt_seleccionada_drill) &
-                    (df_filtered['DEV_2'] == dev2_seleccionado_drill)
-                ]
-                
-                if not df_puerto.empty:
-                    st.info(f"🔍 {len(df_puerto):,} alarmas encontradas en este puerto")
-                    
-                    col_graph, col_table = st.columns([2, 1])
-                    
-                    with col_graph:
-                        # Gráfico temporal de evolución
-                        st.markdown("**📈 Evolución Temporal**")
-                        daily_puerto = df_puerto.groupby('Fecha').size().reset_index(name='Cantidad')
-                        
-                        fig_evol = px.line(
-                            daily_puerto,
-                            x='Fecha',
-                            y='Cantidad',
-                            markers=True,
-                            title=f"Alarmas diarias en {dev2_seleccionado_drill}"
-                        )
-                        fig_evol.update_layout(height=300)
-                        st.plotly_chart(fig_evol, use_container_width=True)
-                        
-                        # Mapa de calor: Hora vs Tipo de Alarma
-                        st.markdown("**⏰ Mapa de Calor: Hora vs Tipo de Alarma**")
-                        df_puerto_heat = df_puerto.copy()
-                        df_puerto_heat['Hora'] = df_puerto_heat['HoraPeru'].dt.hour
-                        
-                        heatmap_puerto = df_puerto_heat.groupby(['Hora', 'TipoFinal']).size().reset_index(name='Conteo')
-                        
-                        if not heatmap_puerto.empty:
-                            fig_heat_puerto = px.density_heatmap(
-                                heatmap_puerto,
-                                x='Hora',
-                                y='TipoFinal',
-                                z='Conteo',
-                                nbinsx=24,
-                                color_continuous_scale='Viridis',
-                                title=f"Concentración horaria de alarmas"
-                            )
-                            fig_heat_puerto.update_xaxes(dtick=1)
-                            fig_heat_puerto.update_layout(height=300)
-                            st.plotly_chart(fig_heat_puerto, use_container_width=True)
-                        else:
-                            st.info("Sin suficientes datos para mapa de calor")
-
-                    with col_table:
-                        # Tabla resumen por tipo de alarma
-                        st.markdown("**📋 Tipos de Alarma**")
-                        tipos_puerto = df_puerto['TipoFinal'].value_counts().reset_index()
-                        tipos_puerto.columns = ['Tipo', 'Cantidad']
-                        st.dataframe(tipos_puerto, hide_index=True, height=200)
-                        
-                        # Top Clientes por SerialNumber
-                        if 'SerialNumber_TDP' in df_puerto.columns:
-                            st.markdown("**🎯 Top Clientes (SerialNumber)**")
-                            clientes_puerto = df_puerto['SerialNumber_TDP'].value_counts().head(10).reset_index()
-                            clientes_puerto.columns = ['SerialNumber', 'Alarmas']
-                            st.dataframe(clientes_puerto, hide_index=True, height=250)
-                        
-                        # Severidad
-                        if 'Severity' in df_puerto.columns:
-                            st.markdown("**⚠️ Severidad**")
-                            severity_puerto = df_puerto['Severity'].value_counts().reset_index()
-                            severity_puerto.columns = ['Severidad', 'Cantidad']
-                            st.dataframe(severity_puerto, hide_index=True, height=150)
-                    
-
-                    
-                    # Tabla detallada expandible
-                    with st.expander("📂 Ver Detalle Completo de Alarmas", expanded=False):
-                        cols_detalle = [
-                            c for c in ['HoraPeru', 'TipoFinal', 'Severity', 'ProbableCause', 
-                                       'Cliente_puerto', 'SerialNumber_TDP']
-                            if c in df_puerto.columns
-                        ]
-                        st.dataframe(
-                            df_puerto[cols_detalle].sort_values('HoraPeru', ascending=False),
-                            use_container_width=True,
-                            height=400
-                        )
-                else:
-                    st.warning("No hay alarmas para este puerto en el rango seleccionado")
-        else:
-            st.warning("⚠️ Columna 'DEV_2' no disponible en los datos")
-else:
-    st.info("Selecciona filtros para comenzar el análisis")
-
-# --- 🏆 TOP 20 PUERTOS PROBLEMÁTICOS (VISTA GLOBAL) ---
-st.divider()
-st.subheader("🏆 Top 20 Puertos Problemáticos (Vista Global)")
-
-if not df_filtered.empty and 'DEV_2' in df_filtered.columns:
-    top_puertos_global = df_filtered['DEV_2'].value_counts().head(20).reset_index()
-    top_puertos_global.columns = ['Puerto', 'Total_Alarmas']
-    
-    # Agregar columna de OLT
-    if 'DEV' in df_filtered.columns:
-        olt_por_puerto = df_filtered.groupby('DEV_2')['DEV'].first().to_dict()
-        top_puertos_global['OLT'] = top_puertos_global['Puerto'].map(olt_por_puerto)
-    
-    col_top1, col_top2 = st.columns([2, 1])
-    
-    with col_top1:
-        fig_top = px.bar(
-            top_puertos_global,
-            x='Puerto',
-            y='Total_Alarmas',
-            text='Total_Alarmas',
-            color='Total_Alarmas',
-            color_continuous_scale='RdYlGn_r',
-            title="Top 20 Puertos con Más Alarmas",
-            hover_data=['OLT'] if 'OLT' in top_puertos_global.columns else None
-        )
-        fig_top.update_traces(textposition='outside')
-        fig_top.update_layout(
-            xaxis_tickangle=-45,
-            height=400,
-            showlegend=False
-        )
-        st.plotly_chart(fig_top, use_container_width=True)
-    
-    with col_top2:
-        st.dataframe(
-            top_puertos_global,
-            hide_index=True,
-            height=400,
-            use_container_width=True
-        )
-else:
-    st.info("No hay datos disponibles para mostrar el ranking de puertos")
-
 # --- 🔄 INFORMACIÓN DE ACTUALIZACIÓN ---
 st.divider()
 st.subheader("📊 Información del Sistema")
@@ -711,13 +785,12 @@ with st.expander("📂 Ver Datos Detallados (Últimas 100)"):
     cols_to_show = [
         c for c in ['HoraPeru', 'DEV', 'DEV_2', 'TipoFinal', 'Severity', 
                     'ProbableCause', 'Cliente_puerto']
-
         if c in df_filtered.columns
     ]
     st.dataframe(
         df_filtered[cols_to_show].sort_values('HoraPeru', ascending=False).head(100),
-        width='stretch'
+        use_container_width=True
     )
 
 st.markdown("---")
-st.caption(f"Dashboard generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} | Huawei Datos Históricos")
+st.caption(f"Dashboard generado el {datetime.now().strftime('%d/%m/%Y %H:%M')} | Análisis Histórico Completo")
