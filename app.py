@@ -1,7 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-from scripts.fetch_data import get_alarmas
+from scripts.fetch_data import get_alarmas_actuales, procesar_alarmas
 from datetime import datetime, timedelta
 from PIL import Image
 import requests
@@ -45,7 +45,10 @@ def consultar_serial_api(serial, gestor):
         return {"error": f"Error de conexión: {str(e)}"}
 
 def actualizar_datos():
-    st.session_state.data = get_alarmas()
+    """Actualiza solo las alarmas actuales"""
+    st.cache_data.clear()  # Limpiar caché
+    raw_data = get_alarmas_actuales()
+    st.session_state.data = procesar_alarmas(raw_data)
     st.session_state.last_update = datetime.now()
 
 # Actualización automática cada 15 min
@@ -55,6 +58,8 @@ if datetime.now() - st.session_state.last_update > timedelta(minutes=15):
 # Botón manual
 if st.button("🔄 Actualizar datos ahora"):
     actualizar_datos()
+    st.success("✅ Datos actualizados correctamente")
+    st.rerun()
 
 # --- CARGAR DATOS ---
 if "data" not in st.session_state:
@@ -62,7 +67,11 @@ if "data" not in st.session_state:
 
 df = st.session_state.data
 
-st.caption(f"🕒 Última actualización: {pd.to_datetime(df['HoraProceso'], errors='coerce').max():%d/%m/%Y %H:%M:%S} | Registros cargados ({len(df)} registros)")
+if "HoraProceso" in df.columns:
+    ultima_actualizacion = pd.to_datetime(df['HoraProceso'], errors='coerce').max()
+    st.caption(f"🕒 Última actualización: {ultima_actualizacion:%d/%m/%Y %H:%M:%S} | Registros cargados ({len(df):,} registros)")
+else:
+    st.caption(f"🕒 Registros cargados: {len(df):,}")
 
 if df.empty:
     st.error("No se pudieron cargar los datos 😢")
@@ -71,34 +80,39 @@ else:
     col1, col2, col3 = st.columns(3)
     
     with col1:
-        # FILTRO DE FECHAS
+        # FILTRO DE FECHAS (filtra EN MEMORIA los datos ya cargados)
         if "HoraPeru" in df.columns:
             df["HoraPeru"] = pd.to_datetime(df["HoraPeru"], errors="coerce", dayfirst=True)
             df = df.dropna(subset=["HoraPeru"])
-            min_fecha = df["HoraPeru"].min().date()
-            max_fecha = df["HoraPeru"].max().date()
+            
+            if not df.empty:
+                min_fecha = df["HoraPeru"].min().date()
+                max_fecha = df["HoraPeru"].max().date()
 
-            rango = st.date_input(
-                "📅 Rango de fechas",
-                value=(min_fecha, max_fecha),
-                min_value=min_fecha,
-                max_value=max_fecha
-            )
+                rango = st.date_input(
+                    "📅 Rango de fechas",
+                    value=(min_fecha, max_fecha),
+                    min_value=min_fecha,
+                    max_value=max_fecha
+                )
 
-            if isinstance(rango, tuple) and len(rango) == 2:
-                inicio, fin = rango
-                df_filtrado = df[
-                    (df["HoraPeru"].dt.date >= inicio) &
-                    (df["HoraPeru"].dt.date <= fin)
-                ]
+                if isinstance(rango, tuple) and len(rango) == 2:
+                    inicio, fin = rango
+                    df_filtrado = df[
+                        (df["HoraPeru"].dt.date >= inicio) &
+                        (df["HoraPeru"].dt.date <= fin)
+                    ]
+                else:
+                    df_filtrado = df.copy()
             else:
+                st.warning("⚠️ No hay datos con fechas válidas")
                 df_filtrado = df.copy()
         else:
             st.warning("⚠️ No existe la columna 'HoraPeru'.")
             df_filtrado = df.copy()
 
     with col2:
-        # FILTRO POR GESTOR (CORREGIDO - SIN CAPTION)
+        # FILTRO POR GESTOR
         if "gestor_seleccionado" not in st.session_state:
             st.session_state.gestor_seleccionado = "Ambos"
 
@@ -140,11 +154,11 @@ else:
 
     # --- MOSTRAR RESULTADOS ---
     if not df_filtrado.empty:
-        st.info(f"📡 Gestor seleccionado: {gestor_seleccionado.upper()} | Registros: {len(df_filtrado)}")
+        st.info(f"📡 Gestor seleccionado: {gestor_seleccionado.upper()} | Registros: {len(df_filtrado):,}")
 
-        if {"DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "SerialNo"}.issubset(df_filtrado.columns):
+        if {"DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "ONTID"}.issubset(df_filtrado.columns):
             # TABLA SIMPLIFICADA SIN COLUMNAS DE HORAS
-            tabla_dinamica = df_filtrado.groupby(["DEV", "Cliente_puerto", "SN", "PN", "HoraPeru"]).size().reset_index(name='Total')
+            tabla_dinamica = df_filtrado.groupby(["DEV", "Cliente_puerto", "SN", "PN", "ONTID", "HoraPeru"]).size().reset_index(name='Total')
             tabla_dinamica = tabla_dinamica.sort_values(by="Total", ascending=False)
             
             # FILTRAR HUAWEI CON TOTAL > 3 SOLO CUANDO SE SELECCIONA "ALARMA POR CLIENTE"
@@ -234,9 +248,10 @@ else:
                     cliente_sel = fila["Cliente_puerto"]
                     sn_sel = fila["SN"]
                     pn_sel = fila["PN"]
+                    ontid_sel = fila["ONTID"]
                     hora_sel = fila["HoraPeru"]
 
-                    columnas_detalle = ["DEV", "Cliente_puerto", "SN", "PN", "HoraPeru", "AditionalInfo", "SerialNumber_TDP"]
+                    columnas_detalle = ["DEV", "Cliente_puerto", "SN", "PN","ONTID", "HoraPeru", "AditionalInfo", "SerialNumber_TDP"]
                     columnas_existentes = [c for c in columnas_detalle if c in df_filtrado.columns]
 
                     detalle = df_filtrado[
@@ -244,6 +259,7 @@ else:
                         (df_filtrado["Cliente_puerto"] == cliente_sel) &
                         (df_filtrado["SN"] == sn_sel) &
                         (df_filtrado["PN"] == pn_sel) &
+                        (df_filtrado["ONTID"] == ontid_sel) &
                         (df_filtrado["HoraPeru"] == hora_sel)
                     ][columnas_existentes]
 
