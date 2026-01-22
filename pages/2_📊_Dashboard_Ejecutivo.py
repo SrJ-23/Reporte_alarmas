@@ -118,7 +118,7 @@ with st.container():
         # CHECKBOX PARA INCLUIR ACTUALES
         incluir_actuales = st.checkbox(
             "📡 Incluir alarmas actuales",
-            value=True,
+            value=False,
             help="Si está marcado, incluye las alarmas actuales de Google Sheets junto con las históricas",
             key="incluir_actuales_checkbox"
         )
@@ -321,38 +321,10 @@ if len(df_filtered) == 0:
 
 st.markdown("---")
 
-# --- KPIs METRICS (SOLO LOS 4 PRINCIPALES) ---
-def mostrar_kpis(df_kpi, df_total_hist):
-    col1, col2, col3, col4 = st.columns(4)
-    
-    total_alarmas = len(df_kpi)
-    n_olts = df_kpi['DEV'].nunique()
-    
-    # Comparativa temporal
-    dias_rango = (end_date - start_date).days + 1
-    prev_start = start_date - timedelta(days=dias_rango)
-    df_prev = df_total_hist[(df_total_hist['Fecha'] >= prev_start) & (df_total_hist['Fecha'] < start_date)]
-    
-    delta_alarmas = total_alarmas - len(df_prev)
-    
-    # Tipo más frecuente
-    tipo_top = df_kpi['TipoFinal'].mode()[0] if not df_kpi.empty else "N/A"
-
-    with col1:
-        st.metric("Total Alarmas (Rango)", f"{total_alarmas:,}", delta=f"{delta_alarmas:+,} vs anterior")
-    with col2:
-        st.metric("OLTs Afectadas", n_olts)
-    with col3:
-        st.metric("Tipo Más Frecuente", tipo_top)
-    with col4:
-        st.metric("Promedio Diario", f"{total_alarmas/max(dias_rango, 1):.0f}")
-
-mostrar_kpis(df_filtered, df)
-st.divider()
 
 # --- GRÁFICO PRINCIPAL (COMBO: BARRAS TIPO FINAL + LÍNEAS OLT) ---
 st.divider()
-st.subheader("🏆 Top 20 Puertos Problemáticos (Vista Global)")
+st.subheader("🏆 Top 20:  Puertos ")
 
 if not df_filtered.empty and 'DEV_2' in df_filtered.columns:
     top_puertos_global = df_filtered['DEV_2'].value_counts().head(20).reset_index()
@@ -404,7 +376,7 @@ else:
 
 # --- 🔍 ANÁLISIS DRILL-DOWN INTERACTIVO ---
 st.divider()
-st.subheader("🔍 Análisis Drill-Down Interactivo")
+st.subheader("🔍 Análisis Interactivo")
 
 # Botón para resetear navegación
 col_reset_drill, col_space = st.columns([1, 5])
@@ -593,8 +565,8 @@ if not df_filtered.empty and 'DEV' in df_filtered.columns:
                         
                         if 'SerialNumber_TDP' in df_pivot_prep.columns:
                             columnas_agrupacion.append('SerialNumber_TDP')
-                        if 'DID' in df_pivot_prep.columns:
-                            columnas_agrupacion.append('DID')
+                        if 'AditionalInfo' in df_pivot_prep.columns:
+                            columnas_agrupacion.append('AditionalInfo')
                         if 'ONTID' in df_pivot_prep.columns:
                             columnas_agrupacion.append('ONTID')
                         
