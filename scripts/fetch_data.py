@@ -13,7 +13,7 @@ URL_ZTE = "https://docs.google.com/spreadsheets/d/e/2PACX-1vRY5_ja1U1Ny4KWCefOi6
 SUPABASE_URL = st.secrets["SUPABASE_URL"]
 SUPABASE_KEY = st.secrets["SUPABASE_KEY"]
 
-# ================= FUNCIONES BASE =================
+# ================= FUNCIONES BASE (SHEETS) =================
 
 def download_csv(url):
     try:
@@ -43,96 +43,121 @@ def map_name_alarm(code):
     }
     return mapping.get(code, "")
 
-# ================= FUNCIONES DE CARGA =================
+# ================= CARGA DE ACTUALES (GOOGLE SHEETS) =================
 
 @st.cache_data(ttl=300, show_spinner="Cargando alarmas actuales...")
 def get_alarmas_actuales():
     """
-    Carga SOLO alarmas actuales desde Google Sheets (Huawei + ZTE)
-    Cache: 5 minutos
+    Carga SOLO alarmas actuales desde Google Sheets.
     """
     print("🔄 Descargando alarmas actuales desde Google Sheets...")
-    
-    huawei_df = download_csv(URL_HUAWEI)
-    zte_df = download_csv(URL_ZTE)
+    try: 
+        huawei_df = download_csv(URL_HUAWEI)
+        zte_df = download_csv(URL_ZTE)
 
-    if not huawei_df.empty:
-        huawei_df["Gestor"] = "Huawei"
-        huawei_df["_Origen"] = "Actual_Huawei"
-    
-    if not zte_df.empty:
-        zte_df["Gestor"] = "ZTE"
-        zte_df["_Origen"] = "Actual_ZTE"
+        if not huawei_df.empty:
+            huawei_df["Gestor"] = "Huawei"
+            huawei_df["_Origen"] = "Actual_Huawei"
+        
+        if not zte_df.empty:
+            zte_df["Gestor"] = "ZTE"
+            zte_df["_Origen"] = "Actual_ZTE"
 
-    actuales = pd.concat([huawei_df, zte_df], ignore_index=True)
-    
-    if not actuales.empty:
-        st.session_state['timestamp_actuales'] = datetime.now()
-    
-    return actuales
+        actuales = pd.concat([huawei_df, zte_df], ignore_index=True)
+        
+        if not actuales.empty:
+            st.session_state['timestamp_actuales'] = datetime.now()
+        
+        return actuales
+    except:
+        return pd.DataFrame()
 
+# ================= CARGA DE HISTÓRICAS (SUPABASE) =================
 
-@st.cache_data(ttl=86400, show_spinner="Cargando alarmas históricas...")
+@st.cache_data(ttl=86400, show_spinner="Cargando Histórico Blindado...")
 def get_alarmas_historicas(start_date, end_date):
     """
-    Carga SOLO alarmas históricas desde Supabase con filtro de rango
-    Cache: 24 horas por combinación de fechas
-    
-    Args:
-        start_date: fecha inicio (date o datetime)
-        end_date: fecha fin (date o datetime)
+    Carga histórica robusta. Baja datos día por día.
     """
-    print(f"📚 Cargando históricas desde Supabase: {start_date} a {end_date}")
+    print(f"📚 Iniciando carga SQL Blindada: {start_date} a {end_date}")
     
+    # --- CAMBIO: Usamos el cliente estándar sin opciones complejas ---
+    # Al bajar día por día, el timeout por defecto es suficiente.
     supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
+    
+    all_data = []
+    
+    if isinstance(start_date, datetime): start_date = start_date.date()
+    if isinstance(end_date, datetime): end_date = end_date.date()
+    
+    # BLOCK SIZE = 1 (Día por día para máxima seguridad)
+    block_size = 3 
+    current_start = start_date
+    
+    # Barra de progreso
+    progress_text = "Conectando a base de datos..."
+    my_bar = st.progress(0, text=progress_text)
+    total_days = (end_date - start_date).days + 1
+    steps_done = 0
 
     try:
-        response = supabase.rpc(
-            "get_alarmas_historico_por_rango",
-            {
-                "p_start_date": str(start_date),
-                "p_end_date": str(end_date)
-            }
-        ).execute()
-
-        df = pd.DataFrame(response.data)
-
-        if not df.empty:
-            df["Gestor"] = df.get("Gestor", "Histórico")
-            df["_Origen"] = "Supabase_Histórico"
-            df["HoraPeru"] = pd.to_datetime(df["HoraPeru"], errors="coerce")
+        while current_start <= end_date:
+            current_end = min(current_start + timedelta(days=block_size - 1), end_date)
             
-            st.session_state['timestamp_historicas'] = datetime.now()
-        
+            pct = min(steps_done / total_days, 1.0)
+            my_bar.progress(pct, text=f"📥 Descargando: {current_start}")
+            
+            try:
+                response = supabase.rpc(
+                    "get_alarmas_historico_por_rango",
+                    {
+                        "p_start_date": str(current_start),
+                        "p_end_date": str(current_end)
+                    }
+                ).execute()
+                
+                if response.data:
+                    all_data.extend(response.data)
+            except Exception as e:
+                print(f"   ⚠️ Error en día {current_start}: {e}")
+            
+            current_start = current_end + timedelta(days=1)
+            steps_done += 1
+            
+        my_bar.empty()
+
+        if not all_data:
+            return pd.DataFrame()
+
+        df = pd.DataFrame(all_data)
+        df["_Origen"] = "Supabase_Histórico"
+        df["Gestor"] = df.get("Gestor", "Histórico")
+
+        # Limpieza de fechas
+        if "HoraPeru" in df.columns:
+            df["HoraPeru"] = pd.to_datetime(df["HoraPeru"], errors="coerce")
+            df["HoraPeru"] = df["HoraPeru"].dt.tz_localize(None)
+            
+        st.session_state['timestamp_historicas'] = datetime.now()
         print(f"✅ Cargadas {len(df):,} alarmas históricas")
         return df
     
     except Exception as e:
-        print(f"❌ Error al cargar históricas: {e}")
-        st.error(f"Error al cargar alarmas históricas: {e}")
+        print(f"❌ Error crítico: {e}")
         return pd.DataFrame()
 
+# ================= COORDINADOR =================
 
 def get_alarmas_completas(start_date, end_date, incluir_actuales=True):
     """
-    Combina alarmas históricas del rango + alarmas actuales (opcional)
-    
-    Args:
-        start_date: fecha inicio del rango
-        end_date: fecha fin del rango
-        incluir_actuales: si True, incluye alarmas actuales de Google Sheets
-    
-    Returns:
-        DataFrame combinado y procesado
+    Coordinador de cargas.
     """
-    print(f"🔄 Cargando alarmas completas (actuales={incluir_actuales})")
-    
     inicio = datetime.now()
     
-    # 1. Cargar históricas del rango
+    # 1. Históricas
     alarmas_historicas = get_alarmas_historicas(start_date, end_date)
     
-    # 2. Cargar actuales si se solicita
+    # 2. Actuales (si se pide)
     if incluir_actuales:
         alarmas_actuales = get_alarmas_actuales()
     else:
@@ -141,39 +166,27 @@ def get_alarmas_completas(start_date, end_date, incluir_actuales=True):
     # 3. Combinar
     if not alarmas_actuales.empty and not alarmas_historicas.empty:
         alarmas = pd.concat([alarmas_actuales, alarmas_historicas], ignore_index=True)
-        print(f"📊 Combinadas: {len(alarmas_actuales):,} actuales + {len(alarmas_historicas):,} históricas = {len(alarmas):,} total")
     elif not alarmas_historicas.empty:
         alarmas = alarmas_historicas.copy()
-        print(f"📊 Solo históricas: {len(alarmas):,}")
     elif not alarmas_actuales.empty:
         alarmas = alarmas_actuales.copy()
-        print(f"📊 Solo actuales: {len(alarmas):,}")
     else:
-        print("⚠️ No se cargaron datos")
         return pd.DataFrame()
     
-    # 4. Procesar datos
+    # 4. Procesar
     alarmas = procesar_alarmas(alarmas)
     
-    # 5. Guardar metadata
     st.session_state['timestamp_procesamiento'] = datetime.now()
     st.session_state['tiempo_procesamiento'] = (datetime.now() - inicio).total_seconds()
     
-    print(f"✅ Procesamiento completo en {st.session_state['tiempo_procesamiento']:.2f}s")
-    
     return alarmas
 
-
-# ================= PROCESAMIENTO UNIFICADO =================
+# ================= PROCESAMIENTO =================
 
 def procesar_alarmas(df):
-    """
-    Aplica todas las transformaciones a un DataFrame de alarmas
-    """
-    if df.empty:
-        return df
+    if df.empty: return df
     
-    # --- Columnas Calculadas ---
+    # Columnas Calculadas
     if all(col in df.columns for col in ["DEV", "FN", "SN", "PN"]):
         df["DEV_2"] = (
             df["DEV"].fillna("?").astype(str) + "-" +
@@ -185,7 +198,7 @@ def procesar_alarmas(df):
     if "NAME_ALARM" not in df.columns and "FaultID" in df.columns:
         df["NAME_ALARM"] = df["FaultID"].apply(map_name_alarm)
 
-    # --- Cruces con Parquets (Si existen) ---
+    # Cruces (con manejo de errores por si faltan archivos)
     try:
         clientes = pd.read_parquet("clientes_activos.parquet")
         if "Etiquetas de fila" in clientes.columns:
@@ -193,63 +206,30 @@ def procesar_alarmas(df):
         if "DEV_2" in df.columns:
             df = df.merge(clientes[["DEV_2", "Total general"]], on="DEV_2", how="left")
             df = df.rename(columns={"Total general": "Cliente_puerto"})
-    except:
-        pass
+    except: pass
 
     try:
         clientes_tdp = pd.read_parquet("clientes_TDP.parquet")
-        # Asegurar tipos string para cruce
         df["AditionalInfo"] = df["AditionalInfo"].astype(str).str.strip()
         clientes_tdp["SUBSCRIPCION"] = clientes_tdp["SUBSCRIPCION"].astype(str).str.strip()
-        
         df = df.merge(
             clientes_tdp[["SUBSCRIPCION", "SERIAL NUMBER"]],
             left_on="AditionalInfo", right_on="SUBSCRIPCION", how="left"
         )
         df = df.rename(columns={"SERIAL NUMBER": "SerialNumber_TDP"})
-    except:
-        pass
+    except: pass
 
-    # --- CORRECCIÓN FINAL DE FECHAS (Aquí estaba el error) ---
+    # Fechas
     if "HoraPeru" in df.columns:
-        # 1. Convertimos la columna mixta (Object) a Datetime REAL
-        # 'utc=True' es vital para que entienda tanto los textos de Sheets como las fechas de Supabase
         df["HoraPeru"] = pd.to_datetime(df["HoraPeru"], errors='coerce', utc=True)
-        
-        # 2. Ahora que YA es datetime, podemos usar .dt sin que explote
         df["HoraPeru"] = df["HoraPeru"].dt.tz_localize(None)
-        
-        # 3. Creamos columna Fecha y ordenamos
         df['Fecha'] = df['HoraPeru'].dt.date
         df = df.sort_values("HoraPeru", ascending=False)
 
     return df
-# ================= WRAPPER DE COMPATIBILIDAD =================
-
-def get_alarmas(start_date=None, end_date=None, forzar_recarga=False):
-    """
-    Función de compatibilidad con código legacy
-    
-    Si NO se pasan fechas: retorna solo alarmas actuales
-    Si SÍ se pasan fechas: retorna completas (históricas + actuales)
-    """
-    if forzar_recarga:
-        st.cache_data.clear()
-    
-    # Sin fechas = solo actuales (comportamiento original de app.py)
-    if start_date is None and end_date is None:
-        alarmas = get_alarmas_actuales()
-        return procesar_alarmas(alarmas)
-    
-    # Con fechas = completas (para Dashboard Ejecutivo)
-    else:
-        return get_alarmas_completas(start_date, end_date, incluir_actuales=True)
-
 
 # ================= METADATA =================
-
 def get_info_cache():
-    """Retorna información sobre el estado del caché"""
     return {
         'timestamp_actuales': st.session_state.get('timestamp_actuales'),
         'timestamp_historicas': st.session_state.get('timestamp_historicas'),
